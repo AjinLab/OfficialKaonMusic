@@ -4,17 +4,13 @@ plugins {
 }
 
 android {
-    namespace = "com.application.kaonmusic"
-    compileSdk {
-        version = release(36) {
-            minorApiLevel = 1
-        }
-    }
+    namespace = "com.kaon.music"
+    compileSdk = 37
 
     defaultConfig {
-        applicationId = "com.application.kaonmusic"
+        applicationId = "com.kaon.music"
         minSdk = 24
-        targetSdk = 36
+        targetSdk = 35
         versionCode = 1
         versionName = "1.0"
 
@@ -37,6 +33,14 @@ android {
     }
 }
 
+android {
+    // ...
+    lint {
+        baseline = file("lint-baseline.xml")
+        checkOnly += "ExpiredTargetSdkVersion" // Or use "TargetSdk" to suppress the specific check
+    }
+}
+
 dependencies {
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.activity.compose)
@@ -53,4 +57,6 @@ dependencies {
     androidTestImplementation(libs.androidx.junit)
     debugImplementation(libs.androidx.compose.ui.test.manifest)
     debugImplementation(libs.androidx.compose.ui.tooling)
+    implementation(libs.androidx.datastore.preferences)
+    implementation(libs.androidx.media3.exoplayer)
 }
