@@ -1,18 +1,20 @@
 package com.kaon.music.core.kernel
 
-import com.kaon.music.core.event.EventBus
-import com.kaon.music.core.logger.Logger
-import com.kaon.music.core.plugin.PluginLoader
+import kotlin.reflect.KClass
 
 interface Kernel {
 
-    val eventBus: EventBus
+    fun <T : Any> register(type: KClass<T>, instance: T)
 
-    val logger: Logger
+    fun <T : Any> get(type: KClass<T>): T
 
-    val pluginLoader: PluginLoader
+    fun contains(type: KClass<*>): Boolean
 
     suspend fun start()
 
     suspend fun stop()
 }
+
+inline fun <reified T : Any> Kernel.register(instance: T) = register(T::class, instance)
+inline fun <reified T : Any> Kernel.get(): T = get(T::class)
+inline fun <reified T : Any> Kernel.contains(): Boolean = contains(T::class)

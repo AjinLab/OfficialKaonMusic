@@ -1,24 +1,16 @@
 package com.kaon.music.core.plugin.impl
 
-import com.kaon.music.core.plugin.Plugin
 import com.kaon.music.core.plugin.PluginLoader
+import com.kaon.music.core.plugin.registry.PluginRegistry
+import com.kaon.music.plugins.defaultui.DefaultUi
 
-class KaonPluginLoader : PluginLoader {
+class KaonPluginLoader(
+    private val registry: PluginRegistry
+) : PluginLoader {
 
-    private val plugins =
-        mutableMapOf<String, Plugin>()
-
-    override fun register(plugin: Plugin) {
-        plugin.initialize()
-        plugins[plugin.id] = plugin
-    }
-
-    override fun unload(id: String) {
-        plugins[id]?.destroy()
-        plugins.remove(id)
-    }
-
-    override fun plugins(): List<Plugin> {
-        return plugins.values.toList()
+    override fun loadBuiltInPlugins() {
+        val defaultUi = DefaultUi()
+        defaultUi.initialize()
+        registry.register(defaultUi)
     }
 }
