@@ -4,6 +4,7 @@ import androidx.room.Dao
 import androidx.room.Query
 import androidx.room.Upsert
 import com.kaon.music.media.library.db.entity.AlbumEntity
+import com.kaon.music.media.library.db.entity.CountProjection
 import kotlinx.coroutines.flow.Flow
 
 @Dao
@@ -16,6 +17,12 @@ interface AlbumDao {
 
     @Query("SELECT * FROM albums WHERE id = :id")
     fun getAlbum(id: Long): Flow<AlbumEntity?>
+
+    @Query("SELECT * FROM albums WHERE id IN (:ids)")
+    suspend fun getAlbumsByIds(ids: List<Long>): List<AlbumEntity>
+
+    @Query("SELECT artistId AS id, COUNT(*) AS count FROM albums WHERE artistId IN (:artistIds) GROUP BY artistId")
+    suspend fun getAlbumCountsByArtistIds(artistIds: List<Long>): List<CountProjection>
 
     @Upsert
     suspend fun upsertAlbums(albums: List<AlbumEntity>)

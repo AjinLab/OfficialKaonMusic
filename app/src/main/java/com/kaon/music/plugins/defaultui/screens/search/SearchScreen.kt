@@ -1,291 +1,324 @@
 package com.kaon.music.plugins.defaultui.screens.search
 
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Folder
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextField
-import androidx.compose.material3.TextFieldDefaults
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.getValue
+import androidx.compose.material.icons.rounded.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
-import com.kaon.music.media.search.AlbumResult
-import com.kaon.music.media.search.ArtistResult
-import com.kaon.music.media.search.FolderResult
-import com.kaon.music.media.search.SongResult
-import com.kaon.music.plugins.defaultui.components.AsyncImage
-import com.kaon.music.plugins.defaultui.theme.KaonColors
-import com.kaon.music.plugins.defaultui.viewmodels.SearchViewModel
+import com.kaon.music.core.playback.PlayerController
+import com.kaon.music.media.artwork.ArtworkRepository
+import com.kaon.music.media.artwork.ArtworkSizes
+import com.kaon.music.media.artwork.ArtworkRequest
+import androidx.compose.foundation.lazy.rememberLazyListState
+import com.kaon.music.media.library.LibraryController
+import com.kaon.music.media.model.Song
+import com.kaon.music.media.search.*
+import com.kaon.music.plugins.defaultui.components.SongContextSheet
+import com.kaon.music.plugins.defaultui.screens.library.SongListItem
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.mapLatest
+import kotlinx.coroutines.launch
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, FlowPreview::class, kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 @Composable
 fun SearchScreen(
-    viewModel: SearchViewModel,
-    onNavigateUp: () -> Unit,
-    onAlbumClick: (Long) -> Unit,
-    onArtistClick: (Long) -> Unit
+    libraryController: LibraryController,
+    playerController: PlayerController,
+    artworkRepository: ArtworkRepository,
+    onNavigateToAlbum: (Long) -> Unit,
+    onNavigateToArtist: (Long) -> Unit
 ) {
-    val query by viewModel.query.collectAsState()
-    val results by viewModel.results.collectAsState()
+    var query by remember { mutableStateOf("") }
+    val queryFlow = remember { MutableStateFlow("") }
+    var searchResults by remember { mutableStateOf<List<SearchItem>>(emptyList()) }
+    val focusManager = LocalFocusManager.current
+    val coroutineScope = rememberCoroutineScope()
+    val playbackState by playerController.playbackState.collectAsState()
+    var activeSongForMenu by remember { mutableStateOf<Song?>(null) }
 
-    Column(modifier = Modifier.fillMaxSize()) {
-        TopAppBar(
-            title = {
-                TextField(
-                    value = query,
-                    onValueChange = { viewModel.onQueryChange(it) },
-                    placeholder = {
-                        Text(
-                            "Search songs, albums, artists...",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = KaonColors.TextTertiary
-                        )
-                    },
-                    singleLine = true,
-                    colors = TextFieldDefaults.colors(
-                        focusedContainerColor = Color.Transparent,
-                        unfocusedContainerColor = Color.Transparent,
-                        focusedIndicatorColor = Color.Transparent,
-                        unfocusedIndicatorColor = Color.Transparent
-                    ),
-                    textStyle = MaterialTheme.typography.bodyMedium,
-                    modifier = Modifier.fillMaxWidth()
+    LaunchedEffect(query) {
+        queryFlow.value = query
+    }
+
+    LaunchedEffect(Unit) {
+        queryFlow
+            .debounce(300)
+            .distinctUntilChanged()
+            .mapLatest { q ->
+                if (q.isNotBlank()) {
+                    libraryController.searchAll(q).items
+                } else {
+                    emptyList()
+                }
+            }
+            .collect { results ->
+                searchResults = results
+            }
+    }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { 
+                    Text(
+                        text = "Search", 
+                        style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Bold)
+                    ) 
+                },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.background
                 )
-            },
-            navigationIcon = {
-                IconButton(onClick = onNavigateUp) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                        contentDescription = "Back"
-                    )
-                }
-            },
-            actions = {
-                if (query.isNotEmpty()) {
-                    IconButton(onClick = { viewModel.onQueryChange("") }) {
-                        Icon(
-                            imageVector = Icons.Default.Close,
-                            contentDescription = "Clear"
-                        )
-                    }
-                }
-            },
-            colors = TopAppBarDefaults.topAppBarColors(
-                containerColor = MaterialTheme.colorScheme.surface
             )
-        )
-
-        val songs = results.items.filterIsInstance<SongResult>()
-        val albums = results.items.filterIsInstance<AlbumResult>()
-        val artists = results.items.filterIsInstance<ArtistResult>()
-        val folders = results.items.filterIsInstance<FolderResult>()
-
-        LazyColumn(
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(bottom = 80.dp)
+        },
+        containerColor = MaterialTheme.colorScheme.background
+    ) { paddingValues ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(paddingValues)
         ) {
-            if (query.isNotEmpty() && results.items.isEmpty()) {
-                item {
-                    Box(
-                        modifier = Modifier.fillParentMaxSize(),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = "No results found for \"$query\"",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = KaonColors.TextSecondary
-                        )
-                    }
-                }
-            }
-            if (songs.isNotEmpty()) {
-                item {
-                    Text(
-                        text = "Songs (${songs.size})",
-                        style = MaterialTheme.typography.bodyLarge,
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier.padding(start = 16.dp, top = 16.dp, bottom = 8.dp)
-                    )
-                }
-                items(songs) { res ->
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { viewModel.playSong(songs.indexOf(res)) }
-                            .padding(horizontal = 16.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        AsyncImage(
-                            path = res.song.artworkPath,
-                            modifier = Modifier
-                                .size(48.dp)
-                                .clip(RoundedCornerShape(8.dp))
-                        )
-                        Spacer(modifier = Modifier.width(12.dp))
-                        Column {
-                            Text(
-                                text = res.song.title,
-                                style = MaterialTheme.typography.bodyLarge,
-                                color = MaterialTheme.colorScheme.onSurface,
-                                maxLines = 1
-                            )
-                            Text(
-                                text = res.song.artist,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = KaonColors.TextSecondary,
-                                maxLines = 1
-                            )
+            OutlinedTextField(
+                value = query,
+                onValueChange = { query = it },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                placeholder = { Text("Songs, Albums, Artists...") },
+                leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null) },
+                trailingIcon = {
+                    if (query.isNotEmpty()) {
+                        IconButton(onClick = { query = "" }) {
+                            Icon(Icons.Rounded.Clear, contentDescription = "Clear")
                         }
                     }
-                }
+                },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                keyboardActions = KeyboardActions(onSearch = { focusManager.clearFocus() }),
+                shape = MaterialTheme.shapes.large
+            )
+
+            val songs = searchResults.filterIsInstance<SongResult>()
+            val albums = searchResults.filterIsInstance<AlbumResult>()
+            val artists = searchResults.filterIsInstance<ArtistResult>()
+            val folders = searchResults.filterIsInstance<FolderResult>()
+
+            val listState = rememberLazyListState()
+
+            LaunchedEffect(listState, songs) {
+                snapshotFlow { listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1 }
+                    .distinctUntilChanged()
+                    .collect { lastVisibleIndex ->
+                        if (lastVisibleIndex >= 0 && songs.isNotEmpty()) {
+                            for (i in 1..8) {
+                                val preloadIndex = lastVisibleIndex + i
+                                val songOffset = 1 // index of SearchCategoryHeader
+                                val songPreloadIndex = preloadIndex - songOffset
+                                if (songPreloadIndex >= 0 && songPreloadIndex < songs.size) {
+                                    val songToPreload = songs[songPreloadIndex].song
+                                    artworkRepository.preload(
+                                        ArtworkRequest(songToPreload.albumId, ArtworkSizes.Thumbnail, songToPreload)
+                                    )
+                                }
+                            }
+                        }
+                    }
             }
 
-            if (albums.isNotEmpty()) {
-                item {
-                    Text(
-                        text = "Albums (${albums.size})",
-                        style = MaterialTheme.typography.bodyLarge,
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier.padding(start = 16.dp, top = 16.dp, bottom = 8.dp)
-                    )
+            LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
+                // 1. Songs Section
+                if (songs.isNotEmpty()) {
+                    item {
+                        SearchCategoryHeader("Songs")
+                    }
+                    items(songs, key = { "song_${it.song.id}" }) { item ->
+                        SongListItem(
+                            song = item.song,
+                            index = -1,
+                            onClick = {
+                                playerController.playSong(item.song)
+                            },
+                            onFavoriteClick = {
+                                coroutineScope.launch {
+                                    libraryController.toggleFavorite(item.song.id)
+                                }
+                            },
+                            onMenuClick = {
+                                activeSongForMenu = item.song
+                            },
+                            artworkRepository = artworkRepository
+                        )
+                    }
                 }
-                items(albums) { res ->
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { onAlbumClick(res.album.id) }
-                            .padding(horizontal = 16.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Box(
+
+                // 2. Albums Section
+                if (albums.isNotEmpty()) {
+                    item {
+                        SearchCategoryHeader("Albums")
+                    }
+                    items(albums, key = { "album_${it.album.id}" }) { item ->
+                        Row(
                             modifier = Modifier
-                                .size(48.dp)
-                                .clip(RoundedCornerShape(8.dp)),
-                            contentAlignment = Alignment.Center
+                                .fillMaxWidth()
+                                .clickable { onNavigateToAlbum(item.album.id) }
+                                .padding(horizontal = 24.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            AsyncImage(
-                                path = null,
-                                modifier = Modifier.fillMaxSize(),
-                                shape = RoundedCornerShape(8.dp)
+                            Icon(
+                                imageVector = Icons.Rounded.Album,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(36.dp)
                             )
-                        }
-                        Spacer(modifier = Modifier.width(12.dp))
-                        Column {
-                            Text(
-                                text = res.album.title,
-                                style = MaterialTheme.typography.bodyLarge,
-                                maxLines = 1
-                            )
-                            Text(
-                                text = res.album.artistName,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = KaonColors.TextSecondary,
-                                maxLines = 1
-                            )
-                        }
-                    }
-                }
-            }
-
-            if (artists.isNotEmpty()) {
-                item {
-                    Text(
-                        text = "Artists (${artists.size})",
-                        style = MaterialTheme.typography.bodyLarge,
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier.padding(start = 16.dp, top = 16.dp, bottom = 8.dp)
-                    )
-                }
-                items(artists) { res ->
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { onArtistClick(res.artist.id) }
-                            .padding(horizontal = 16.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column {
-                            Text(
-                                text = res.artist.name,
-                                style = MaterialTheme.typography.bodyLarge,
-                                maxLines = 1
-                            )
-                            Text(
-                                text = "${res.artist.songCount} songs",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = KaonColors.TextSecondary
-                            )
+                            Spacer(modifier = Modifier.width(16.dp))
+                            Column {
+                                Text(
+                                    text = item.album.title,
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    text = item.album.artistName,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
                         }
                     }
                 }
-            }
 
-            if (folders.isNotEmpty()) {
-                item {
-                    Text(
-                        text = "Folders (${folders.size})",
-                        style = MaterialTheme.typography.bodyLarge,
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier.padding(start = 16.dp, top = 16.dp, bottom = 8.dp)
-                    )
+                // 3. Artists Section
+                if (artists.isNotEmpty()) {
+                    item {
+                        SearchCategoryHeader("Artists")
+                    }
+                    items(artists, key = { "artist_${it.artist.id}" }) { item ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { onNavigateToArtist(item.artist.id) }
+                                .padding(horizontal = 24.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Person,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(36.dp)
+                            )
+                            Spacer(modifier = Modifier.width(16.dp))
+                            Column {
+                                Text(
+                                    text = item.artist.name,
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    text = "${item.artist.songCount} songs",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
                 }
-                items(folders) { res ->
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { /* TBD folder view */ }
-                            .padding(horizontal = 16.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Folder,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary
-                        )
-                        Spacer(modifier = Modifier.width(12.dp))
-                        Column {
-                            Text(
-                                text = java.io.File(res.folder.path).name,
-                                style = MaterialTheme.typography.bodyLarge,
-                                maxLines = 1
+
+                // 4. Folders Section
+                if (folders.isNotEmpty()) {
+                    item {
+                        SearchCategoryHeader("Folders")
+                    }
+                    items(folders, key = { "folder_${it.folder.path}" }) { item ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    // For simplicity, just play the folder's songs
+                                    coroutineScope.launch {
+                                        val songsInFolder = libraryController.songs.mapLatest { allSongs ->
+                                            allSongs.filter { parentPath(it.path) == item.folder.path }
+                                        }.distinctUntilChanged().first()
+                                        if (songsInFolder.isNotEmpty()) {
+                                            playerController.setQueue(songsInFolder, 0)
+                                            playerController.play(0)
+                                        }
+                                    }
+                                }
+                                .padding(horizontal = 24.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Folder,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(36.dp)
                             )
-                            Text(
-                                text = res.folder.path,
-                                style = MaterialTheme.typography.bodySmall,
-                                maxLines = 1,
-                                color = KaonColors.TextSecondary
-                            )
+                            Spacer(modifier = Modifier.width(16.dp))
+                            Column {
+                                Text(
+                                    text = java.io.File(item.folder.path).name,
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    text = item.folder.path,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1
+                                )
+                            }
                         }
                     }
                 }
             }
         }
+    }
+
+    val songForMenu = activeSongForMenu
+    if (songForMenu != null) {
+        SongContextSheet(
+            song = songForMenu,
+            playbackState = playbackState,
+            playerController = playerController,
+            libraryController = libraryController,
+            onDismiss = { activeSongForMenu = null },
+            onGoToAlbum = onNavigateToAlbum,
+            onGoToArtist = onNavigateToArtist
+        )
+    }
+}
+
+@Composable
+fun SearchCategoryHeader(title: String) {
+    Text(
+        text = title,
+        style = MaterialTheme.typography.labelSmall,
+        fontWeight = FontWeight.Bold,
+        color = MaterialTheme.colorScheme.primary,
+        modifier = Modifier.padding(horizontal = 24.dp, vertical = 16.dp)
+    )
+}
+
+private fun parentPath(path: String): String {
+    val lastSeparator = path.lastIndexOf('/')
+    return when {
+        lastSeparator > 0 -> path.substring(0, lastSeparator)
+        lastSeparator == 0 -> "/"
+        else -> "/"
     }
 }

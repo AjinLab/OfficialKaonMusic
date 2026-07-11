@@ -17,23 +17,18 @@ data class ArtworkResult(
 )
 
 class ArtworkLoader(
-    private val context: Context,
-    private val cache: AlbumArtCache,
-    private val metadataReader: MetadataProvider,
-    private val paletteCache: ArtworkPaletteCache
+    private val paletteCache: ArtworkPaletteCache,
+    private val repository: ArtworkRepository
 ) {
     /**
      * Loads artwork and extracts palette colors in one pass.
      * Colors are cached by artworkKey (file path) so different editions are handled correctly.
      */
     suspend fun load(song: Song): ArtworkResult = withContext(Dispatchers.IO) {
-        val artwork = loadArtwork(song)
+        val bitmap = repository.load(ArtworkRequest(song.albumId, ArtworkSizes.Player, song))
+        val artwork = if (bitmap != null) Artwork.BitmapSource(bitmap) else Artwork.None
 
         val colors = when (artwork) {
-            is Artwork.FileSource -> {
-                val artworkKey = artwork.file.absolutePath
-                paletteCache.getOrExtract(artworkKey, artwork.file)
-            }
             is Artwork.BitmapSource -> {
                 val artworkKey = "bitmap_${song.albumId}_${song.artworkHash ?: song.id}"
                 paletteCache.getOrExtract(artworkKey, artwork.bitmap)
@@ -42,36 +37,5 @@ class ArtworkLoader(
         }
 
         ArtworkResult(artwork, colors)
-    }
-
-    /**
-     * Original artwork loading logic — returns the Artwork without palette.
-     */
-    private suspend fun loadArtwork(song: Song): Artwork {
-        val cachedFile = cache.get(song.albumId)
-        if (cachedFile != null) {
-            return Artwork.FileSource(cachedFile)
-        }
-
-        val metadata = metadataReader.read(song)
-        if (metadata.artwork != null) {
-            val savedFile = cache.put(song.albumId, metadata.artwork)
-            if (savedFile != null) {
-                return Artwork.FileSource(savedFile)
-            }
-        }
-
-        // If artwork is missing, generate placeholder based on album/song and cache it
-        val placeholderBitmap = PlaceholderGenerator.generate(
-            title = metadata.title,
-            album = metadata.album,
-            artist = metadata.artist
-        )
-        val savedFile = cache.put(song.albumId, placeholderBitmap)
-        if (savedFile != null) {
-            return Artwork.FileSource(savedFile)
-        }
-
-        return Artwork.None
     }
 }

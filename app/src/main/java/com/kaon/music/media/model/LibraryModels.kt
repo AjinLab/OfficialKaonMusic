@@ -1,5 +1,8 @@
 package com.kaon.music.media.model
 
+import androidx.compose.runtime.Immutable
+
+@Immutable
 data class Artist(
     val id: Long,
     val name: String,
@@ -9,6 +12,7 @@ data class Artist(
     val searchName: String = name.lowercase()
 }
 
+@Immutable
 data class Album(
     val id: Long,
     val title: String,
@@ -22,12 +26,14 @@ data class Album(
     val searchArtist: String = artistName.lowercase()
 }
 
+@Immutable
 data class AlbumDetail(
     val album: Album,
     val songs: List<Song>,
     val totalDuration: Long
 )
 
+@Immutable
 data class ArtistDetail(
     val artist: Artist,
     val albums: List<Album>,
@@ -35,11 +41,13 @@ data class ArtistDetail(
     val totalDuration: Long
 )
 
+@Immutable
 data class Genre(
     val name: String,
     val songCount: Int
 )
 
+@Immutable
 data class Folder(
     val path: String,
     val songCount: Int
@@ -47,6 +55,7 @@ data class Folder(
     val searchPath: String = path.lowercase()
 }
 
+@Immutable
 data class Playlist(
     val id: Long,
     val name: String,

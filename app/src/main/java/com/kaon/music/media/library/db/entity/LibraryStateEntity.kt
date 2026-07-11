@@ -10,5 +10,8 @@ data class LibraryStateEntity(
     val lastScan: Long = 0,
     val songCount: Int = 0,
     val schemaVersion: Int = 1,
-    val legacyMigrated: Boolean = false
+    val legacyMigrated: Boolean = false,
+    val lastScanGeneration: Long = 0L,
+    val lastScanVolume: String = "",
+    val lastDeletionReconciliation: Long = 0L
 )

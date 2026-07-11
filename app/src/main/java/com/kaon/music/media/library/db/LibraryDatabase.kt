@@ -2,6 +2,8 @@ package com.kaon.music.media.library.db
 
 import androidx.room.Database
 import androidx.room.RoomDatabase
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import com.kaon.music.media.library.db.dao.AlbumDao
 import com.kaon.music.media.library.db.dao.ArtistDao
 import com.kaon.music.media.library.db.dao.LibraryStateDao
@@ -16,6 +18,8 @@ import com.kaon.music.media.library.db.entity.PlaybackStatisticsEntity
 import com.kaon.music.media.library.db.entity.PlaylistEntity
 import com.kaon.music.media.library.db.entity.PlaylistSongEntity
 import com.kaon.music.media.library.db.entity.SongEntity
+import com.kaon.music.media.library.db.entity.FavoriteEntity
+import com.kaon.music.media.library.db.dao.FavoriteDao
 
 @Database(
     entities = [
@@ -25,9 +29,10 @@ import com.kaon.music.media.library.db.entity.SongEntity
         PlaylistEntity::class,
         PlaylistSongEntity::class,
         PlaybackStatisticsEntity::class,
-        LibraryStateEntity::class
+        LibraryStateEntity::class,
+        FavoriteEntity::class
     ],
-    version = 1,
+    version = 4,
     exportSchema = false
 )
 abstract class LibraryDatabase : RoomDatabase() {
@@ -38,8 +43,15 @@ abstract class LibraryDatabase : RoomDatabase() {
     abstract fun searchDao(): SearchDao
     abstract fun libraryStateDao(): LibraryStateDao
     abstract fun librarySyncDao(): LibrarySyncDao
+    abstract fun favoriteDao(): FavoriteDao
 
     companion object {
         const val DATABASE_NAME = "kaon_library_room.db"
+
+        val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_playlist_songs_songId` ON `playlist_songs` (`songId`)")
+            }
+        }
     }
 }

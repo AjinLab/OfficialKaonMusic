@@ -5,6 +5,7 @@ import android.graphics.BitmapFactory
 import android.graphics.Color
 import androidx.core.graphics.ColorUtils
 import androidx.palette.graphics.Palette
+import com.kaon.music.media.cache.AlbumArtCache
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -19,7 +20,10 @@ import kotlin.concurrent.withLock
  * Palette extraction runs on IO and results are cached in memory.
  * LRU eviction is synchronized to prevent concurrent modification.
  */
-class ArtworkPaletteCache(private val maxSize: Int = 200) {
+class ArtworkPaletteCache(
+    private val diskCache: AlbumArtCache? = null,
+    private val maxSize: Int = 200
+) {
 
     private data class Entry(val colors: ArtworkColors, val accessTime: Long)
 
@@ -37,15 +41,24 @@ class ArtworkPaletteCache(private val maxSize: Int = 200) {
             return entry.colors
         }
 
+        // Disk Cache hit
+        val cachedColors = diskCache?.getPalette(artworkKey)
+        if (cachedColors != null) {
+            cache[artworkKey] = Entry(cachedColors, System.currentTimeMillis())
+            evictIfNeeded()
+            return cachedColors
+        }
+
         // Cache miss — extract on IO
         return withContext(Dispatchers.IO) {
             try {
-                val bitmap = BitmapFactory.decodeFile(artworkFile.absolutePath) ?: return@withContext null
+                val bitmap = decodeSampledBitmap(artworkFile, 128, 128) ?: return@withContext null
                 val colors = extractColors(bitmap)
                 bitmap.recycle()
 
                 if (colors != null) {
                     cache[artworkKey] = Entry(colors, System.currentTimeMillis())
+                    diskCache?.putPalette(artworkKey, colors)
                     evictIfNeeded()
                 }
                 colors
@@ -64,11 +77,33 @@ class ArtworkPaletteCache(private val maxSize: Int = 200) {
             return entry.colors
         }
 
+        val cachedColors = diskCache?.getPalette(artworkKey)
+        if (cachedColors != null) {
+            cache[artworkKey] = Entry(cachedColors, System.currentTimeMillis())
+            evictIfNeeded()
+            return cachedColors
+        }
+
         return withContext(Dispatchers.IO) {
             try {
-                val colors = extractColors(bitmap)
+                val scaledBitmap = if (bitmap.width > 128 || bitmap.height > 128) {
+                    val scale = 128f / Math.max(bitmap.width, bitmap.height)
+                    val width = (bitmap.width * scale).toInt()
+                    val height = (bitmap.height * scale).toInt()
+                    Bitmap.createScaledBitmap(bitmap, width, height, true)
+                } else {
+                    bitmap
+                }
+
+                val colors = extractColors(scaledBitmap)
+                
+                if (scaledBitmap != bitmap) {
+                    scaledBitmap.recycle()
+                }
+
                 if (colors != null) {
                     cache[artworkKey] = Entry(colors, System.currentTimeMillis())
+                    diskCache?.putPalette(artworkKey, colors)
                     evictIfNeeded()
                 }
                 colors
@@ -131,5 +166,36 @@ class ArtworkPaletteCache(private val maxSize: Int = 200) {
 
     fun clear() {
         cache.clear()
+    }
+
+    private fun decodeSampledBitmap(file: File, reqWidth: Int, reqHeight: Int): Bitmap? {
+        try {
+            val options = BitmapFactory.Options().apply {
+                inJustDecodeBounds = true
+            }
+            BitmapFactory.decodeFile(file.absolutePath, options)
+            options.inSampleSize = calculateInSampleSize(options, reqWidth, reqHeight)
+            options.inJustDecodeBounds = false
+            // Reserve ARGB_8888 for palette extraction
+            options.inPreferredConfig = Bitmap.Config.ARGB_8888
+            return BitmapFactory.decodeFile(file.absolutePath, options)
+        } catch (e: Exception) {
+            return null
+        }
+    }
+
+    private fun calculateInSampleSize(options: BitmapFactory.Options, reqWidth: Int, reqHeight: Int): Int {
+        val height = options.outHeight
+        val width = options.outWidth
+        var inSampleSize = 1
+
+        if (height > reqHeight || width > reqWidth) {
+            val halfHeight = height / 2
+            val halfWidth = width / 2
+            while (halfHeight / inSampleSize >= reqHeight && halfWidth / inSampleSize >= reqWidth) {
+                inSampleSize *= 2
+            }
+        }
+        return inSampleSize
     }
 }

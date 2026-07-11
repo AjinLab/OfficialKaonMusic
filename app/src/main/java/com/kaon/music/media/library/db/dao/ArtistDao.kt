@@ -14,6 +14,9 @@ interface ArtistDao {
     @Query("SELECT * FROM artists WHERE id = :id")
     fun getArtist(id: Long): Flow<ArtistEntity?>
 
+    @Query("SELECT * FROM artists WHERE id IN (:ids)")
+    suspend fun getArtistsByIds(ids: List<Long>): List<ArtistEntity>
+
     @Upsert
     suspend fun upsertArtists(artists: List<ArtistEntity>)
 

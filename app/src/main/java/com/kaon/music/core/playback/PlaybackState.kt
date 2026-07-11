@@ -5,9 +5,10 @@ import com.kaon.music.media.manager.RepeatMode
 import com.kaon.music.media.manager.ShuffleMode
 import com.kaon.music.media.artwork.Artwork
 import com.kaon.music.media.artwork.ArtworkColors
+import androidx.compose.runtime.Immutable
 
+@Immutable
 data class PlaybackState(
-
     val repeatMode: RepeatMode = RepeatMode.OFF,
     val shuffleMode: ShuffleMode = ShuffleMode.OFF,
 
@@ -20,7 +21,7 @@ data class PlaybackState(
     val isPlaying: Boolean = false,
     val currentPosition: Long = 0L,
     val duration: Long = 0L,
-
+    val bufferedPosition: Long = 0L,
     val title: String = "Unknown",
     val artist: String = "Unknown",
     val album: String = "Unknown Album",
@@ -30,52 +31,69 @@ data class PlaybackState(
 
     val albumArtUri: String? = null,
     val artwork: Artwork = Artwork.None,
-    val artworkColors: ArtworkColors? = null
+    val artworkColors: ArtworkColors? = null,
+    val audioInfo: com.kaon.music.media.codec.AudioInfo? = null
 ) {
     val currentSong: Song?
         get() = queue.getOrNull(currentIndex)
 
-    override fun equals(other: Any?): Boolean {
-        if (this === other) return true
-        if (javaClass != other?.javaClass) return false
-
-        other as PlaybackState
-
-        if (queue != other.queue) return false
-        if (currentIndex != other.currentIndex) return false
-        if (hasNext != other.hasNext) return false
-        if (hasPrevious != other.hasPrevious) return false
-        if (isPlaying != other.isPlaying) return false
-        if (currentPosition != other.currentPosition) return false
-        if (duration != other.duration) return false
-        if (title != other.title) return false
-        if (artist != other.artist) return false
-        if (album != other.album) return false
-        if (playbackSpeed != other.playbackSpeed) return false
-        if (sleepTimerEndTime != other.sleepTimerEndTime) return false
-        if (albumArtUri != other.albumArtUri) return false
-        if (artwork != other.artwork) return false
-        if (artworkColors != other.artworkColors) return false
-
-        return true
+    fun toCurrentSongState(): CurrentSongState? {
+        val song = currentSong ?: return null
+        return CurrentSongState(
+            id = song.id,
+            title = title,
+            artist = artist,
+            album = album,
+            artistId = song.artistId,
+            albumId = song.albumId,
+            artwork = artwork,
+            artworkColors = artworkColors,
+            audioInfo = audioInfo
+        )
     }
 
-    override fun hashCode(): Int {
-        var result = queue.hashCode()
-        result = 31 * result + currentIndex
-        result = 31 * result + hasNext.hashCode()
-        result = 31 * result + hasPrevious.hashCode()
-        result = 31 * result + isPlaying.hashCode()
-        result = 31 * result + currentPosition.hashCode()
-        result = 31 * result + duration.hashCode()
-        result = 31 * result + title.hashCode()
-        result = 31 * result + artist.hashCode()
-        result = 31 * result + album.hashCode()
-        result = 31 * result + playbackSpeed.hashCode()
-        result = 31 * result + (sleepTimerEndTime?.hashCode() ?: 0)
-        result = 31 * result + (albumArtUri?.hashCode() ?: 0)
-        result = 31 * result + artwork.hashCode()
-        result = 31 * result + (artworkColors?.hashCode() ?: 0)
-        return result
-    }
+    fun toProgressState() = ProgressState(
+        currentPosition = currentPosition,
+        duration = duration,
+        bufferedPosition = bufferedPosition,
+        isPlaying = isPlaying
+    )
+
+    fun toControlsState() = ControlsState(
+        isPlaying = isPlaying,
+        repeatMode = repeatMode,
+        shuffleMode = shuffleMode,
+        hasNext = hasNext,
+        hasPrevious = hasPrevious
+    )
 }
+
+@Immutable
+data class CurrentSongState(
+    val id: Long = -1L,
+    val title: String = "Unknown",
+    val artist: String = "Unknown",
+    val album: String = "Unknown Album",
+    val artistId: Long = -1L,
+    val albumId: Long = -1L,
+    val artwork: Artwork = Artwork.None,
+    val artworkColors: ArtworkColors? = null,
+    val audioInfo: com.kaon.music.media.codec.AudioInfo? = null
+)
+
+@Immutable
+data class ProgressState(
+    val currentPosition: Long = 0L,
+    val duration: Long = 0L,
+    val bufferedPosition: Long = 0L,
+    val isPlaying: Boolean = false
+)
+
+@Immutable
+data class ControlsState(
+    val isPlaying: Boolean = false,
+    val repeatMode: RepeatMode = RepeatMode.OFF,
+    val shuffleMode: ShuffleMode = ShuffleMode.OFF,
+    val hasNext: Boolean = false,
+    val hasPrevious: Boolean = false
+)

@@ -2,18 +2,15 @@ package com.kaon.music.media.manager
 
 import com.kaon.music.media.model.Song
 import com.kaon.music.core.playback.QueueState
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.launch
-import java.util.Stack
+import java.util.ArrayDeque
 
 class QueueManager {
     private var queue = emptyList<Song>()
     private var currentIndex = -1
-    private val history = Stack<Int>()
+    private val history = ArrayDeque<Int>()
 
     private var repeatMode = RepeatMode.OFF
     private var shuffleMode = ShuffleMode.OFF
@@ -21,8 +18,6 @@ class QueueManager {
 
     private val _queueState = MutableStateFlow(QueueState())
     val queueState: StateFlow<QueueState> = _queueState.asStateFlow()
-
-    private val scope = CoroutineScope(Dispatchers.IO)
 
     init {
         updateQueueState()
@@ -85,10 +80,9 @@ class QueueManager {
         queue = newQueue
         updateShuffledIndices()
 
-        val adjustedHistory = Stack<Int>()
+        val adjustedHistory = ArrayDeque<Int>(history.size)
         for (h in history) {
-            if (h >= insertIndex) adjustedHistory.push(h + 1)
-            else adjustedHistory.push(h)
+            adjustedHistory.addLast(if (h >= insertIndex) h + 1 else h)
         }
         history.clear()
         history.addAll(adjustedHistory)
@@ -103,8 +97,12 @@ class QueueManager {
     }
 
     fun previous(): Song? {
-        val prevIndex = resolvePrevious()
+        val prevIndex = consumePrevious()
         if (prevIndex == -1) return null
+
+        if (currentIndex != -1 && currentIndex != prevIndex) {
+            pushHistory(currentIndex)
+        }
 
         currentIndex = prevIndex
         updateQueueState()
@@ -133,11 +131,45 @@ class QueueManager {
         return currentIndex + 1
     }
 
-    private fun resolvePrevious(): Int {
+    /**
+     * Non-destructive: returns the previous index without modifying history.
+     * Used by [hasPrevious] to query availability.
+     */
+    private fun peekPrevious(): Int {
         if (queue.isEmpty()) return -1
 
         if (history.isNotEmpty()) {
-            return history.pop()
+            return history.peekLast() ?: -1
+        }
+
+        if (repeatMode == RepeatMode.ONE) {
+            return currentIndex
+        }
+
+        if (shuffleMode == ShuffleMode.ON) {
+            val currentShufflePos = shuffledIndices.indexOf(currentIndex)
+            if (currentShufflePos <= 0) {
+                return if (repeatMode == RepeatMode.ALL) shuffledIndices.lastOrNull() ?: -1 else -1
+            }
+            return shuffledIndices[currentShufflePos - 1]
+        }
+
+        if (currentIndex <= 0) {
+            return if (repeatMode == RepeatMode.ALL) queue.size - 1 else -1
+        }
+
+        return currentIndex - 1
+    }
+
+    /**
+     * Destructive: returns the previous index and pops from history if applicable.
+     * Used only by [previous] when actually navigating backward.
+     */
+    private fun consumePrevious(): Int {
+        if (queue.isEmpty()) return -1
+
+        if (history.isNotEmpty()) {
+            return history.removeLast()
         }
 
         if (repeatMode == RepeatMode.ONE) {
@@ -198,17 +230,23 @@ class QueueManager {
     fun shuffleMode() = shuffleMode
 
     fun hasNext(): Boolean = resolveNext() != -1
-    fun hasPrevious(): Boolean = resolvePrevious() != -1
+    fun hasPrevious(): Boolean = peekPrevious() != -1
 
     private fun updateShuffledIndices() {
         shuffledIndices = if (shuffleMode == ShuffleMode.ON) {
             val indices = queue.indices.toMutableList()
-            if (currentIndex != -1 && indices.contains(currentIndex)) {
-                indices.remove(currentIndex)
+            if (currentIndex in queue.indices) {
                 indices.shuffle()
-                listOf(currentIndex) + indices
+                val currentPosition = indices.indexOf(currentIndex)
+                if (currentPosition > 0) {
+                    val first = indices[0]
+                    indices[0] = currentIndex
+                    indices[currentPosition] = first
+                }
+                indices
             } else {
-                indices.shuffled()
+                indices.shuffle()
+                indices
             }
         } else {
             queue.indices.toList()
@@ -216,9 +254,9 @@ class QueueManager {
     }
 
     private fun pushHistory(index: Int) {
-        history.push(index)
+        history.addLast(index)
         if (history.size > 50) {
-            history.removeElementAt(0)
+            history.removeFirst()
         }
     }
 

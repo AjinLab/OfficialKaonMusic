@@ -3,10 +3,16 @@ package com.kaon.music.core.playback
 import com.kaon.music.media.model.Song
 import com.kaon.music.media.manager.RepeatMode
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.collections.immutable.ImmutableList
 
 interface PlayerController {
 
     val playbackState: StateFlow<PlaybackState>
+    
+    val currentSong: StateFlow<CurrentSongState?>
+    val progress: StateFlow<ProgressState>
+    val controls: StateFlow<ControlsState>
+    val queue: StateFlow<ImmutableList<Song>>
 
     fun setQueue(queue: List<Song>, startIndex: Int = 0)
 
@@ -41,6 +47,8 @@ interface PlayerController {
     fun seekBackward()
 
     fun setShuffle(enabled: Boolean)
+
+    fun toggleShuffle()
 
     fun setRepeatMode(mode: RepeatMode)
 

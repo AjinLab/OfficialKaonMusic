@@ -15,7 +15,10 @@ class ExoPlaybackEngine(
     private val context: Context
 ) : PlaybackEngine {
 
-    override val player = ExoPlayer.Builder(context)
+    private val renderersFactory = androidx.media3.exoplayer.DefaultRenderersFactory(context)
+        .setExtensionRendererMode(androidx.media3.exoplayer.DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER)
+
+    override val player = ExoPlayer.Builder(context, renderersFactory)
         .setAudioAttributes(
             AudioAttributes.Builder()
                 .setUsage(C.USAGE_MEDIA)
@@ -59,7 +62,9 @@ class ExoPlaybackEngine(
 
     override fun setMediaItems(items: List<MediaItem>, startIndex: Int, startPositionMs: Long) {
         player.setMediaItems(items, startIndex, startPositionMs)
-        player.prepare()
+        if (player.playbackState == Player.STATE_IDLE || player.playbackState == Player.STATE_ENDED) {
+            player.prepare()
+        }
     }
 
     override fun setMediaResource(resourceId: Int) {

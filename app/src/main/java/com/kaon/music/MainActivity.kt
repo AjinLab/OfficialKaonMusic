@@ -16,7 +16,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        val kernel = KaonKernel(applicationContext)
+        val kernel = (application as KaonApplication).kernel
 
         val permissionManager = kernel.get<PermissionManager>()
         if (!permissionManager.hasPermission(Manifest.permission.READ_MEDIA_AUDIO)) {
@@ -29,6 +29,22 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             KaonApp(kernel)
+        }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        val kernel = (application as KaonApplication).kernel
+        if (kernel.contains(com.kaon.music.core.metrics.JankStatsMonitor::class)) {
+            kernel.get<com.kaon.music.core.metrics.JankStatsMonitor>().startTracking(this)
+        }
+    }
+
+    override fun onStop() {
+        super.onStop()
+        val kernel = (application as KaonApplication).kernel
+        if (kernel.contains(com.kaon.music.core.metrics.JankStatsMonitor::class)) {
+            kernel.get<com.kaon.music.core.metrics.JankStatsMonitor>().stopTracking()
         }
     }
 }

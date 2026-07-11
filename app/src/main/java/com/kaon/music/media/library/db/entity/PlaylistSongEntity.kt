@@ -23,7 +23,8 @@ import androidx.room.PrimaryKey
     ],
     indices = [
         Index(value = ["playlistId", "position"], unique = true),
-        Index(value = ["playlistId", "songId"])
+        Index(value = ["playlistId", "songId"]),
+        Index(value = ["songId"])
     ]
 )
 data class PlaylistSongEntity(

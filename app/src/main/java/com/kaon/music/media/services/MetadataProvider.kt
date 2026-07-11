@@ -5,12 +5,15 @@ import android.media.MediaMetadataRetriever
 import android.net.Uri
 import com.kaon.music.media.model.AudioMetadata
 import com.kaon.music.media.model.Song
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 class MetadataProvider(private val context: Context) {
+    private val failedArtworkAlbumIds = java.util.concurrent.ConcurrentHashMap.newKeySet<Long>()
 
-    fun read(song: Song): AudioMetadata {
+    suspend fun read(song: Song): AudioMetadata = withContext(Dispatchers.IO) {
         val retriever = MediaMetadataRetriever()
-        return try {
+        try {
             retriever.setDataSource(context, Uri.parse(song.uri))
             
             val rawTitle = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_TITLE)
@@ -58,7 +61,20 @@ class MetadataProvider(private val context: Context) {
             val discNumberStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DISC_NUMBER)
             val discNumber = parseTrackNumber(discNumberStr) ?: song.disc
 
-            val artwork = retriever.embeddedPicture
+            val artwork = if (failedArtworkAlbumIds.contains(song.albumId)) {
+                null
+            } else {
+                val art = retriever.embeddedPicture
+                if (art == null) {
+                    val fallbackArt = loadAlbumArtFromMediaStore(context, song.albumId)
+                    if (fallbackArt == null) {
+                        failedArtworkAlbumIds.add(song.albumId)
+                    }
+                    fallbackArt
+                } else {
+                    art
+                }
+            }
             
             val artworkUri = song.artworkPath?.let { 
                 if (it.startsWith("/")) Uri.fromFile(java.io.File(it)) else Uri.parse(it) 
@@ -101,6 +117,20 @@ class MetadataProvider(private val context: Context) {
             )
         } finally {
             retriever.release()
+        }
+    }
+
+    private fun loadAlbumArtFromMediaStore(context: Context, albumId: Long): ByteArray? {
+        val artworkUri = android.content.ContentUris.withAppendedId(
+            android.net.Uri.parse("content://media/external/audio/albumart"),
+            albumId
+        )
+        return try {
+            context.contentResolver.openInputStream(artworkUri)?.use { inputStream ->
+                inputStream.readBytes()
+            }
+        } catch (e: Exception) {
+            null
         }
     }
 

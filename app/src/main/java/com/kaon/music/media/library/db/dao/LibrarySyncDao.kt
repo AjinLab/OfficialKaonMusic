@@ -27,7 +27,7 @@ abstract class LibrarySyncDao {
     @Query("DELETE FROM albums WHERE NOT EXISTS (SELECT 1 FROM songs WHERE songs.albumId = albums.id)")
     abstract suspend fun deleteOrphanAlbums()
 
-    @Query("DELETE FROM artists WHERE NOT EXISTS (SELECT 1 FROM albums WHERE albums.artistId = artists.id)")
+    @Query("DELETE FROM artists WHERE NOT EXISTS (SELECT 1 FROM albums WHERE albums.artistId = artists.id) AND NOT EXISTS (SELECT 1 FROM songs WHERE songs.artistId = artists.id)")
     abstract suspend fun deleteOrphanArtists()
 
     @Upsert
@@ -47,5 +47,27 @@ abstract class LibrarySyncDao {
         deleteOrphanArtists()
         
         upsertState(snapshot.state)
+    }
+
+    @Transaction
+    open suspend fun applyLibraryDiff(
+        addedSongs: List<SongEntity>,
+        updatedSongs: List<SongEntity>,
+        removedSongIds: List<Long>,
+        artists: List<ArtistEntity>,
+        albums: List<AlbumEntity>,
+        state: LibraryStateEntity
+    ) {
+        if (addedSongs.isNotEmpty() || updatedSongs.isNotEmpty()) {
+            if (artists.isNotEmpty()) upsertArtists(artists)
+            if (albums.isNotEmpty()) upsertAlbums(albums)
+            upsertSongs(addedSongs + updatedSongs)
+        }
+        if (removedSongIds.isNotEmpty()) {
+            deleteSongs(removedSongIds)
+        }
+        deleteOrphanAlbums()
+        deleteOrphanArtists()
+        upsertState(state)
     }
 }

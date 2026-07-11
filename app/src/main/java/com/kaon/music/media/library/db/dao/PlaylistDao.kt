@@ -21,6 +21,12 @@ interface PlaylistDao {
     @Upsert
     suspend fun upsertPlaylistSongs(songs: List<PlaylistSongEntity>)
 
+    @Query("SELECT * FROM playlist_songs")
+    fun getAllPlaylistSongs(): Flow<List<PlaylistSongEntity>>
+
+    @Query("DELETE FROM playlist_songs WHERE playlistId = :playlistId AND songId = :songId")
+    suspend fun deletePlaylistSong(playlistId: Long, songId: Long)
+
     @Query("DELETE FROM playlists WHERE id = :id")
     suspend fun deletePlaylist(id: Long)
 }

@@ -9,25 +9,23 @@ import android.graphics.Shader
 import android.graphics.Typeface
 
 object PlaceholderGenerator {
+    private val gradients = arrayOf(
+        Pair(0xFF4158D0.toInt(), 0xFFC850C0.toInt()), // Blue/Magenta
+        Pair(0xFF00DBDE.toInt(), 0xFFFC00FF.toInt()), // Cyan/Pink
+        Pair(0xFFFBAB7E.toInt(), 0xFFF7CE68.toInt()), // Peach/Yellow
+        Pair(0xFF85FFBD.toInt(), 0xFFFFFB7D.toInt()), // Mint/Yellow
+        Pair(0xFF21D4FD.toInt(), 0xFFB721FF.toInt()), // Sky Blue/Purple
+        Pair(0xFF09203F.toInt(), 0xFF537895.toInt()), // Midnight Blue/Slate
+        Pair(0xFFFA709F.toInt(), 0xFFFEE140.toInt()), // Pink/Yellow Sunset
+        Pair(0xFF30CFD0.toInt(), 0xFF330867.toInt()), // Turquoise/Deep Purple
+        Pair(0xFFA1C4FD.toInt(), 0xFFC2E9FB.toInt()), // Cloud/Sky Blue
+        Pair(0xFFD4FC79.toInt(), 0xFF96E6A1.toInt())  // Lime/Green
+    )
     
     fun generate(title: String, album: String, artist: String): Bitmap {
         val size = 512
         val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bitmap)
-
-        // Curated premium gradients (start color, end color)
-        val gradients = listOf(
-            Pair(0xFF4158D0.toInt(), 0xFFC850C0.toInt()), // Blue/Magenta
-            Pair(0xFF00DBDE.toInt(), 0xFFFC00FF.toInt()), // Cyan/Pink
-            Pair(0xFFFBAB7E.toInt(), 0xFFF7CE68.toInt()), // Peach/Yellow
-            Pair(0xFF85FFBD.toInt(), 0xFFFFFB7D.toInt()), // Mint/Yellow
-            Pair(0xFF21D4FD.toInt(), 0xFFB721FF.toInt()), // Sky Blue/Purple
-            Pair(0xFF09203F.toInt(), 0xFF537895.toInt()), // Midnight Blue/Slate
-            Pair(0xFFFA709F.toInt(), 0xFFFEE140.toInt()), // Pink/Yellow Sunset
-            Pair(0xFF30CFD0.toInt(), 0xFF330867.toInt()), // Turquoise/Deep Purple
-            Pair(0xFFA1C4FD.toInt(), 0xFFC2E9FB.toInt()), // Cloud/Sky Blue
-            Pair(0xFFD4FC79.toInt(), 0xFF96E6A1.toInt())  // Lime/Green
-        )
 
         // Hash text (preferring album name) to select a stable gradient
         val textToHash = if (album.isNotBlank() && !album.equals("Unknown Album", ignoreCase = true) && !album.equals("<unknown>", ignoreCase = true)) album else title

@@ -35,7 +35,17 @@ interface LibraryController {
 
     suspend fun genres(): List<Genre>
     suspend fun folders(): List<Folder>
-    suspend fun playlists(): List<Playlist>
+    
+    fun playlistsFlow(): Flow<List<Playlist>>
+    suspend fun createPlaylist(name: String): Long
+    suspend fun deletePlaylist(id: Long)
+    suspend fun addSongsToPlaylist(playlistId: Long, songIds: List<Long>)
+    suspend fun removeSongFromPlaylist(playlistId: Long, songId: Long)
+    fun playlistSongs(playlistId: Long): Flow<List<Song>>
+    
+    fun favorites(): Flow<List<Song>>
+    suspend fun toggleFavorite(songId: Long)
+    suspend fun deleteSong(songId: Long): Boolean
 
     suspend fun applyLibrarySnapshot(snapshot: com.kaon.music.media.library.db.LibrarySnapshot)
 }

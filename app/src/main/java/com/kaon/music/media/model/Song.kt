@@ -1,5 +1,8 @@
 package com.kaon.music.media.model
 
+import androidx.compose.runtime.Immutable
+
+@Immutable
 data class Song(
     val id: Long,
     val mediaStoreId: Long,

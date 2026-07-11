@@ -33,6 +33,7 @@ data class SongEntity(
     @PrimaryKey
     val id: Long,
     val uri: String,
+    val path: String,
     val title: String,
     val artistId: Long,
     val albumId: Long,
