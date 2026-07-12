@@ -50,7 +50,8 @@ class MediaManager(
 ) : PlayerController {
 
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
-    private val player = engine.player
+    private val player: Player?
+        get() = engine.player
     private val stateStore = PlaybackStateStore()
     private val reducer = PlaybackStateReducer()
     private val sleepTimerManager = SleepTimerManager(
@@ -96,21 +97,8 @@ class MediaManager(
     private var queueRevision: Long = 0L
     private var lastSyncedQueue: List<Song>? = null
 
-    init {
-        scope.launch {
-            sleepTimerManager.sleepTimerState.collect { timerState ->
-                val endTime = when {
-                    timerState.endOfSong -> -1L
-                    timerState.enabled && timerState.remaining != null -> {
-                        System.currentTimeMillis() + timerState.remaining.inWholeMilliseconds
-                    }
-                    else -> null
-                }
-                stateStore.update { it.copy(sleepTimerEndTime = endTime) }
-            }
-        }
-
-        player.addListener(object : Player.Listener {
+    private fun setupPlayerListener(activePlayer: Player) {
+        activePlayer.addListener(object : Player.Listener {
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 val status = if (isPlaying) PlaybackStatus.Playing else PlaybackStatus.Paused
                 stateStore.update { reducer.reduce(it, PlaybackEvent.StatusChanged(status)) }
@@ -119,7 +107,7 @@ class MediaManager(
 
             override fun onPlaybackStateChanged(state: Int) {
                 if (state == Player.STATE_READY) {
-                    stateStore.update { it.copy(duration = if (player.duration >= 0) player.duration else it.duration) }
+                    stateStore.update { it.copy(duration = if (activePlayer.duration >= 0) activePlayer.duration else it.duration) }
                 }
             }
 
@@ -131,7 +119,7 @@ class MediaManager(
                     return
                 }
                 if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO) {
-                    val index = player.currentMediaItemIndex
+                    val index = activePlayer.currentMediaItemIndex
                     if (index != queueManager.currentIndex() && index >= 0) {
                         val song = queueManager.play(index)
                         if (song != null) {
@@ -163,7 +151,7 @@ class MediaManager(
                 
                 val status = PlaybackStatus.Error(playbackError)
                 stateStore.update { reducer.reduce(it, PlaybackEvent.StatusChanged(status)) }
-                player.stop()
+                activePlayer.stop()
             }
 
             override fun onTracksChanged(tracks: androidx.media3.common.Tracks) {
@@ -185,13 +173,39 @@ class MediaManager(
                 }
             }
         })
+    }
+
+    init {
+        scope.launch {
+            sleepTimerManager.sleepTimerState.collect { timerState ->
+                val endTime = when {
+                    timerState.endOfSong -> -1L
+                    timerState.enabled && timerState.remaining != null -> {
+                        System.currentTimeMillis() + timerState.remaining.inWholeMilliseconds
+                    }
+                    else -> null
+                }
+                stateStore.update { it.copy(sleepTimerEndTime = endTime) }
+            }
+        }
+
+        scope.launch {
+            engine.playerFlow.collect { activePlayer ->
+                if (activePlayer != null) {
+                    setupPlayerListener(activePlayer)
+                    restoreState(libraryController)
+                    refreshQueueState()
+                }
+            }
+        }
 
         scope.launch {
             while (isActive) {
-                if (player.isPlaying) {
-                    val currentPos = player.currentPosition
-                    val duration = if (player.duration >= 0) player.duration else 0L
-                    val buffered = player.bufferedPosition
+                val activePlayer = player
+                if (activePlayer != null && activePlayer.isPlaying) {
+                    val currentPos = activePlayer.currentPosition
+                    val duration = if (activePlayer.duration >= 0) activePlayer.duration else 0L
+                    val buffered = activePlayer.bufferedPosition
                     
                     stateStore.update {
                         it.copy(
@@ -202,7 +216,7 @@ class MediaManager(
                     }
                     saveState()
                 }
-                delay(if (player.isPlaying) 250 else 1000)
+                delay(if (player?.isPlaying == true) 250 else 1000)
             }
         }
 
@@ -229,27 +243,37 @@ class MediaManager(
                 }
                 saveState()
 
-                player.repeatMode = when (queueState.repeatMode) {
-                    RepeatMode.OFF -> Player.REPEAT_MODE_OFF
-                    RepeatMode.ONE -> Player.REPEAT_MODE_ONE
-                    RepeatMode.ALL -> Player.REPEAT_MODE_ALL
+                player?.let { activePlayer ->
+                    activePlayer.repeatMode = when (queueState.repeatMode) {
+                        RepeatMode.OFF -> Player.REPEAT_MODE_OFF
+                        RepeatMode.ONE -> Player.REPEAT_MODE_ONE
+                        RepeatMode.ALL -> Player.REPEAT_MODE_ALL
+                    }
+                    activePlayer.shuffleModeEnabled = queueState.shuffle
                 }
-                player.shuffleModeEnabled = queueState.shuffle
             }
         }
     }
 
     private fun syncPlayerPlaylist(queue: List<Song>, currentIndex: Int, startPositionMs: Long = 0) {
+        val activePlayer = player ?: return
         if (queue.isEmpty() || currentIndex < 0) return
 
-        if (lastSyncedQueue === queue && player.mediaItemCount == queue.size) {
-            if (player.currentMediaItemIndex != currentIndex || startPositionMs > 0) {
-                player.seekTo(currentIndex, startPositionMs)
+        if (lastSyncedQueue === queue && activePlayer.mediaItemCount == queue.size) {
+            if (activePlayer.currentMediaItemIndex != currentIndex || startPositionMs > 0) {
+                activePlayer.seekTo(currentIndex, startPositionMs)
             }
             return
         }
 
         val mediaItems = queue.map { song ->
+            val baseKey = "album_${song.albumId}"
+            val cacheFile = java.io.File(context.cacheDir, "artwork/$baseKey.webp")
+            val artworkUri = if (cacheFile.exists()) {
+                Uri.fromFile(cacheFile)
+            } else {
+                song.artworkPath?.let { if (it.startsWith("/")) Uri.fromFile(java.io.File(it)) else Uri.parse(it) }
+            }
             androidx.media3.common.MediaItem.Builder()
                 .setMediaId(song.id.toString())
                 .setUri(song.uri)
@@ -258,22 +282,22 @@ class MediaManager(
                         .setTitle(song.title)
                         .setArtist(song.artist)
                         .setAlbumTitle(song.album)
-                        .setArtworkUri(song.artworkPath?.let { if (it.startsWith("/")) Uri.fromFile(java.io.File(it)) else Uri.parse(it) })
+                        .setArtworkUri(artworkUri)
                         .build()
                 )
                 .build()
         }
 
-        val needsPlaylistUpdate = player.mediaItemCount != mediaItems.size || 
-            (0 until player.mediaItemCount).any { player.getMediaItemAt(it).mediaId != mediaItems[it].mediaId }
+        val needsPlaylistUpdate = activePlayer.mediaItemCount != mediaItems.size || 
+            (0 until activePlayer.mediaItemCount).any { activePlayer.getMediaItemAt(it).mediaId != mediaItems[it].mediaId }
 
         if (needsPlaylistUpdate) {
             engine.setMediaItems(mediaItems, currentIndex, startPositionMs)
             lastSyncedQueue = queue
         } else {
             lastSyncedQueue = queue
-            if (player.currentMediaItemIndex != currentIndex || startPositionMs > 0) {
-                player.seekTo(currentIndex, startPositionMs)
+            if (activePlayer.currentMediaItemIndex != currentIndex || startPositionMs > 0) {
+                activePlayer.seekTo(currentIndex, startPositionMs)
             }
         }
     }
@@ -373,25 +397,68 @@ class MediaManager(
                         audioInfo = audioInfo
                     )
                 }
+
+                // Update the player's media item metadata in a flicker-free way!
+                val activePlayer = player
+                if (activePlayer != null) {
+                    val currentIndex = activePlayer.currentMediaItemIndex
+                    if (currentIndex >= 0 && currentIndex < activePlayer.mediaItemCount) {
+                        val currentItem = activePlayer.getMediaItemAt(currentIndex)
+                        if (currentItem.mediaId == song.id.toString()) {
+                            val baseKey = "album_${song.albumId}"
+                            val cacheFile = java.io.File(context.cacheDir, "artwork/$baseKey.webp")
+                            val artworkUri = if (cacheFile.exists()) {
+                                Uri.fromFile(cacheFile)
+                            } else {
+                                song.artworkPath?.let { if (it.startsWith("/")) Uri.fromFile(java.io.File(it)) else Uri.parse(it) }
+                            }
+                            
+                            val newTitle = metadata.title.takeIf { it.isNotBlank() } ?: song.title
+                            val newArtist = metadata.artist.takeIf { it.isNotBlank() } ?: song.artist
+                            val newAlbum = metadata.album.takeIf { it.isNotBlank() } ?: song.album
+                            
+                            val currentMeta = currentItem.mediaMetadata
+                            val isChanged = currentMeta.title != newTitle ||
+                                            currentMeta.artist != newArtist ||
+                                            currentMeta.albumTitle != newAlbum ||
+                                            currentMeta.artworkUri != artworkUri
+                                            
+                            if (isChanged) {
+                                val updatedMetadata = currentMeta.buildUpon()
+                                    .setTitle(newTitle)
+                                    .setArtist(newArtist)
+                                    .setAlbumTitle(newAlbum)
+                                    .setArtworkUri(artworkUri)
+                                    .build()
+                                    
+                                val updatedItem = currentItem.buildUpon()
+                                    .setMediaMetadata(updatedMetadata)
+                                    .build()
+                                    
+                                activePlayer.replaceMediaItem(currentIndex, updatedItem)
+                            }
+                        }
+                    }
+                }
             }
         }
     }
 
     override fun play() {
-        player.play()
+        engine.play()
     }
 
     override fun pause() {
-        player.pause()
+        engine.pause()
     }
 
     override fun stop() {
         lastLoadedSongId = -1L
-        player.stop()
+        engine.stop()
     }
 
     override fun togglePlayback() {
-        if (player.isPlaying) pause() else play()
+        if (player?.isPlaying == true) pause() else play()
     }
 
     override fun next() {
@@ -405,7 +472,7 @@ class MediaManager(
     }
 
     override fun previous() {
-        if (player.currentPosition > 5000) {
+        if ((player?.currentPosition ?: 0L) > 5000) {
             seekTo(0)
             return
         }
@@ -419,16 +486,19 @@ class MediaManager(
     }
 
     override fun seekTo(position: Long) {
-        player.seekTo(position)
+        engine.seekTo(position)
     }
 
     override fun seekForward() {
-        val newPos = (player.currentPosition + 10000).coerceAtMost(if (player.duration > 0) player.duration else 0)
+        val currentPos = player?.currentPosition ?: 0L
+        val duration = player?.duration ?: 0L
+        val newPos = (currentPos + 10000).coerceAtMost(if (duration > 0) duration else 0L)
         seekTo(newPos)
     }
 
     override fun seekBackward() {
-        val newPos = (player.currentPosition - 10000).coerceAtLeast(0)
+        val currentPos = player?.currentPosition ?: 0L
+        val newPos = (currentPos - 10000).coerceAtLeast(0L)
         seekTo(newPos)
     }
 
@@ -466,7 +536,7 @@ class MediaManager(
     private fun saveState(force: Boolean) {
         val song = queueManager.current()
         val currentSongId = song?.id ?: -1L
-        val currentPos = player.currentPosition
+        val currentPos = player?.currentPosition ?: 0L
 
         val shouldSave = force || 
                 currentSongId != lastSavedSongId || 

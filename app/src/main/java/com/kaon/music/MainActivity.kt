@@ -19,8 +19,17 @@ class MainActivity : ComponentActivity() {
         val kernel = (application as KaonApplication).kernel
 
         val permissionManager = kernel.get<PermissionManager>()
+        val permissionsToRequest = mutableListOf<String>()
         if (!permissionManager.hasPermission(Manifest.permission.READ_MEDIA_AUDIO)) {
-            permissionManager.requestPermission(this, Manifest.permission.READ_MEDIA_AUDIO)
+            permissionsToRequest.add(Manifest.permission.READ_MEDIA_AUDIO)
+        }
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+            if (!permissionManager.hasPermission(Manifest.permission.POST_NOTIFICATIONS)) {
+                permissionsToRequest.add(Manifest.permission.POST_NOTIFICATIONS)
+            }
+        }
+        if (permissionsToRequest.isNotEmpty()) {
+            androidx.core.app.ActivityCompat.requestPermissions(this, permissionsToRequest.toTypedArray(), 1)
         }
 
         lifecycleScope.launch {

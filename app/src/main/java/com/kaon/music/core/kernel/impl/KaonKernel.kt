@@ -16,7 +16,7 @@ import com.kaon.music.core.plugin.registry.PluginRegistry
 import com.kaon.music.core.plugin.registry.impl.KaonPluginRegistry
 import com.kaon.music.core.playback.PlaybackEngine
 import com.kaon.music.core.playback.PlayerController
-import com.kaon.music.media.engine.ExoPlaybackEngine
+import com.kaon.music.media.engine.MediaSessionPlaybackEngine
 import com.kaon.music.media.manager.MediaManager
 import com.kaon.music.media.manager.QueueManager
 import com.kaon.music.media.manager.QueuePersistence
@@ -30,7 +30,7 @@ import com.kaon.music.media.library.MediaRepository
 import com.kaon.music.media.library.AlbumProvider
 import com.kaon.music.media.library.ArtistProvider
 import com.kaon.music.media.library.PlaylistProvider
-import com.kaon.music.media.service.PlaybackService
+import com.kaon.music.media.service.KaonPlaybackService
 import com.kaon.music.media.library.LibraryController
 import com.kaon.music.media.library.db.LibraryDatabase
 import android.view.Choreographer
@@ -86,7 +86,7 @@ class KaonKernel(private val context: Context) : Kernel {
     }
 
     private fun registerPlayback() {
-        register(PlaybackEngine::class, ExoPlaybackEngine(context))
+        register(PlaybackEngine::class, MediaSessionPlaybackEngine(context))
     }
 
     private fun registerMedia() {
@@ -156,10 +156,8 @@ class KaonKernel(private val context: Context) : Kernel {
         val mediaManager = get(MediaManager::class)
         val library = get(LibraryController::class)
         
-        // Critical: Restore playback state and start service immediately
-        mediaManager.restoreState(library)
-        mediaManager.refreshQueueState()
-        context.startService(android.content.Intent(context, PlaybackService::class.java))
+        // Critical: Start service immediately. MediaManager will restore state when player flow connects.
+        context.startService(android.content.Intent(context, KaonPlaybackService::class.java))
 
         // Defer non-critical work until after first frame
         Choreographer.getInstance().postFrameCallback {
