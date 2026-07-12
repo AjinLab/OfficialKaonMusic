@@ -12,7 +12,8 @@ import androidx.room.PrimaryKey
             entity = ArtistEntity::class,
             parentColumns = ["id"],
             childColumns = ["artistId"],
-            onDelete = ForeignKey.NO_ACTION
+            onDelete = ForeignKey.NO_ACTION,
+            deferred = true
         )
     ],
     indices = [

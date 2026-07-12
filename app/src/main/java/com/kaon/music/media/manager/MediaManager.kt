@@ -34,6 +34,9 @@ import kotlinx.collections.immutable.toImmutableList
 import com.kaon.music.media.state.PlaybackStateReducer
 import com.kaon.music.media.state.PlaybackStatus
 import com.kaon.music.media.state.PlaybackEvent
+import com.kaon.music.media.state.PlaybackError
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlin.time.Duration.Companion.seconds
 
 class MediaManager(
@@ -57,6 +60,13 @@ class MediaManager(
     )
     private var artworkJob: kotlinx.coroutines.Job? = null
     override val playbackState = stateStore.state
+
+    private val _errors = MutableSharedFlow<PlaybackError>(
+        replay = 0,
+        extraBufferCapacity = 8,
+        onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST
+    )
+    override val errorEvents: kotlinx.coroutines.flow.Flow<PlaybackError> = _errors.asSharedFlow()
 
     override val currentSong: StateFlow<CurrentSongState?> = 
         playbackState.map { it.toCurrentSongState() }
@@ -143,19 +153,16 @@ class MediaManager(
                         error.errorCode == androidx.media3.common.PlaybackException.ERROR_CODE_DECODER_QUERY_FAILED ||
                         error.errorCode == androidx.media3.common.PlaybackException.ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED
                 
-                if (isUnsupported) {
-                    android.widget.Toast.makeText(
-                        context,
-                        "This audio format isn't supported on your device.",
-                        android.widget.Toast.LENGTH_LONG
-                    ).show()
+                val playbackError = if (isUnsupported) {
+                    PlaybackError.CodecUnsupported
                 } else {
-                    android.widget.Toast.makeText(
-                        context,
-                        "Playback failed: ${error.localizedMessage ?: "Unknown error"}",
-                        android.widget.Toast.LENGTH_LONG
-                    ).show()
+                    PlaybackError.Unknown
                 }
+                
+                _errors.tryEmit(playbackError)
+                
+                val status = PlaybackStatus.Error(playbackError)
+                stateStore.update { reducer.reduce(it, PlaybackEvent.StatusChanged(status)) }
                 player.stop()
             }
 

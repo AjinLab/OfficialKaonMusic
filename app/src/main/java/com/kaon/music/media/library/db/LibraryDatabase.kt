@@ -32,7 +32,7 @@ import com.kaon.music.media.library.db.dao.FavoriteDao
         LibraryStateEntity::class,
         FavoriteEntity::class
     ],
-    version = 4,
+    version = 5,
     exportSchema = false
 )
 abstract class LibraryDatabase : RoomDatabase() {

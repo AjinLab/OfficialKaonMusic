@@ -5,11 +5,9 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
-import androidx.compose.material.icons.rounded.PlayArrow
-import androidx.compose.material.icons.rounded.Shuffle
+import androidx.compose.material.icons.rounded.FavoriteBorder
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -21,6 +19,9 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import kotlinx.coroutines.flow.distinctUntilChanged
 
 import com.kaon.music.media.library.LibraryController
+import com.kaon.music.plugins.defaultui.components.KaonCollectionHeader
+import com.kaon.music.plugins.defaultui.components.KaonEmptyState
+import com.kaon.music.plugins.defaultui.components.KaonPlaybackActionRow
 import com.kaon.music.plugins.defaultui.screens.library.SongListItem
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -80,83 +81,47 @@ fun LikedSongsScreen(
     ) { paddingValues ->
         LazyColumn(
             state = listState,
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(paddingValues)
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(
+                top = paddingValues.calculateTopPadding(),
+                bottom = paddingValues.calculateBottomPadding() + 86.dp
+            )
         ) {
             item {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(24.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    Text(
-                        text = "Liked Songs",
-                        style = MaterialTheme.typography.headlineMedium,
-                        fontWeight = FontWeight.Bold
-                    )
-
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    Text(
-                        text = "${songs.size} songs",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f)
-                    )
-                }
+                KaonCollectionHeader(
+                    title = "Liked Songs",
+                    subtitle = "${songs.size} songs"
+                )
             }
 
-            // Header buttons (Play, Shuffle)
             item {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 24.dp, vertical = 16.dp),
-                    horizontalArrangement = Arrangement.spacedBy(16.dp)
-                ) {
-                    Button(
-                        onClick = {
-                            if (songs.isNotEmpty()) {
-                                playerController.setQueue(songs, 0)
-                                playerController.play(0)
-                            }
-                        },
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Icon(Icons.Rounded.PlayArrow, contentDescription = null)
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("Play")
-                    }
-                    OutlinedButton(
-                        onClick = {
-                            if (songs.isNotEmpty()) {
-                                playerController.setQueue(songs.shuffled(), 0)
-                                playerController.play(0)
-                            }
-                        },
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Icon(Icons.Rounded.Shuffle, contentDescription = null)
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("Shuffle")
-                    }
-                }
+                KaonPlaybackActionRow(
+                    onPlay = {
+                        if (songs.isNotEmpty()) {
+                            playerController.setQueue(songs, 0)
+                            playerController.play(0)
+                        }
+                    },
+                    onShuffle = {
+                        if (songs.isNotEmpty()) {
+                            playerController.setQueue(songs.shuffled(), 0)
+                            playerController.play(0)
+                        }
+                    },
+                    enabled = songs.isNotEmpty()
+                )
             }
 
             if (songs.isEmpty()) {
                 item {
-                    Box(
+                    KaonEmptyState(
+                        title = "No liked songs yet",
+                        message = "Tap the heart on songs you want to find quickly later.",
+                        icon = Icons.Rounded.FavoriteBorder,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(200.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = "No liked songs yet",
-                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
-                        )
-                    }
+                            .height(220.dp)
+                    )
                 }
             } else {
                 itemsIndexed(songs, key = { _, song -> song.id }) { index, song ->

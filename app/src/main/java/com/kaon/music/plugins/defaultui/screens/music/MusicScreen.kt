@@ -16,6 +16,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.kaon.music.media.library.LibraryController
 import com.kaon.music.media.model.Playlist
+import com.kaon.music.plugins.defaultui.components.KaonEmptyState
+import com.kaon.music.plugins.defaultui.components.KaonSectionHeader
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -23,7 +25,7 @@ import kotlinx.coroutines.launch
 fun MusicScreen(
     libraryController: LibraryController,
     onNavigateToLikedSongs: () -> Unit,
-    onNavigateToPlaylist: (Long, String) -> Unit
+    onNavigateToPlaylist: (Long) -> Unit
 ) {
     val playlists by libraryController.playlistsFlow().collectAsState(initial = emptyList())
     var showCreateDialog by remember { mutableStateOf(false) }
@@ -49,8 +51,11 @@ fun MusicScreen(
         LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(paddingValues)
-                .padding(horizontal = 16.dp)
+                .padding(horizontal = 16.dp),
+            contentPadding = PaddingValues(
+                top = paddingValues.calculateTopPadding(),
+                bottom = paddingValues.calculateBottomPadding() + 166.dp
+            )
         ) {
             // Liked Songs Item
             item {
@@ -91,37 +96,26 @@ fun MusicScreen(
 
             // Playlists Section Header
             item {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 24.dp, bottom = 8.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = "Playlists",
-                        style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.Bold
-                    )
+                KaonSectionHeader(
+                    title = "Playlists",
+                    modifier = Modifier.padding(top = 16.dp),
+                    action = {
                     IconButton(onClick = { showCreateDialog = true }) {
                         Icon(Icons.Rounded.Add, contentDescription = "Create Playlist")
                     }
-                }
+                    }
+                )
             }
 
             if (playlists.isEmpty()) {
                 item {
-                    Box(
+                    KaonEmptyState(
+                        title = "No playlists yet",
+                        message = "Create a playlist to collect songs for any mood.",
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(150.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = "No playlists created yet",
-                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
-                        )
-                    }
+                            .height(180.dp)
+                    )
                 }
             } else {
                 items(playlists, key = { it.id }) { playlist ->
@@ -129,7 +123,7 @@ fun MusicScreen(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(vertical = 4.dp)
-                            .clickable { onNavigateToPlaylist(playlist.id, playlist.name) },
+                            .clickable { onNavigateToPlaylist(playlist.id) },
                         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
                     ) {
                         Row(

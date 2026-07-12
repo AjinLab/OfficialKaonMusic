@@ -11,7 +11,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.kaon.music.media.library.LibraryController
+import com.kaon.music.plugins.defaultui.components.KaonSectionHeader
+import com.kaon.music.plugins.defaultui.components.KaonSimpleRow
 import kotlinx.coroutines.launch
+
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -41,73 +46,50 @@ fun SettingsScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(paddingValues)
+                .verticalScroll(rememberScrollState())
                 .padding(16.dp)
+                .padding(bottom = 166.dp)
         ) {
-            Text(
-                text = "Library Settings",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.primary,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.padding(vertical = 8.dp)
+            KaonSectionHeader(
+                title = "Library",
+                modifier = Modifier.padding(top = 8.dp)
             )
 
             Card(
                 modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
             ) {
-                Row(
+                KaonSimpleRow(
+                    icon = Icons.Rounded.Refresh,
+                    title = "Rescan Media Library",
+                    subtitle = "Scan device storage for new music files",
                     modifier = Modifier
-                        .fillMaxWidth()
                         .clickable(enabled = !isScanning) {
                             coroutineScope.launch {
                                 isScanning = true
                                 libraryController.refresh()
                                 isScanning = false
                             }
+                        },
+                    contentPadding = PaddingValues(16.dp),
+                    trailing = {
+                        if (isScanning) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(24.dp),
+                                strokeWidth = 2.dp
+                            )
                         }
-                        .padding(16.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(
-                        imageVector = Icons.Rounded.Refresh,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Spacer(modifier = Modifier.width(16.dp))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "Rescan Media Library",
-                            style = MaterialTheme.typography.bodyLarge,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Text(
-                            text = "Scan device storage for new music files",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
-                        )
                     }
-                    if (isScanning) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(24.dp),
-                            strokeWidth = 2.dp
-                        )
-                    }
-                }
+                )
             }
 
             Spacer(modifier = Modifier.height(24.dp))
 
-            Text(
-                text = "About KaonMusic",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.primary,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.padding(vertical = 8.dp)
-            )
+            KaonSectionHeader(title = "About")
 
             Card(
                 modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
                     Text(

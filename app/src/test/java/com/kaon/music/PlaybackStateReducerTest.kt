@@ -20,9 +20,11 @@ class PlaybackStateReducerTest {
         
         val state1 = reducer.reduce(initial, PlaybackEvent.StatusChanged(PlaybackStatus.Playing))
         assertTrue(state1.isPlaying)
+        assertEquals(PlaybackStatus.Playing, state1.status)
 
         val state2 = reducer.reduce(state1, PlaybackEvent.StatusChanged(PlaybackStatus.Paused))
         assertFalse(state2.isPlaying)
+        assertEquals(PlaybackStatus.Paused, state2.status)
     }
 
     @Test

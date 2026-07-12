@@ -8,6 +8,7 @@ import kotlinx.collections.immutable.ImmutableList
 interface PlayerController {
 
     val playbackState: StateFlow<PlaybackState>
+    val errorEvents: kotlinx.coroutines.flow.Flow<com.kaon.music.media.state.PlaybackError>
     
     val currentSong: StateFlow<CurrentSongState?>
     val progress: StateFlow<ProgressState>

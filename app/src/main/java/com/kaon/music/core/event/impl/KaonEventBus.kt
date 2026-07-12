@@ -26,10 +26,10 @@ class KaonEventBus : EventBus {
     override fun <T : Event> subscribe(
         type: KClass<T>,
         listener: (T) -> Unit
-    ) {
+    ): com.kaon.music.core.event.Subscription {
         Log.d("KAON", "Subscribed to ${type.simpleName}")
 
-        scope.launch {
+        val job = scope.launch {
             flow.collect { event ->
 
                 Log.d(
@@ -43,5 +43,6 @@ class KaonEventBus : EventBus {
                 }
             }
         }
+        return com.kaon.music.core.event.Subscription { job.cancel() }
     }
 }

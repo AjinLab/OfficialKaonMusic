@@ -65,9 +65,6 @@ fun QueueSheet(
                         onClick = {
                             playerController.play(index)
                         },
-                        onRemove = {
-                            // Implement remove if supported by controller
-                        },
                         artworkRepository = artworkRepository
                     )
                 }
@@ -81,7 +78,6 @@ fun QueueItem(
     song: Song,
     isCurrent: Boolean,
     onClick: () -> Unit,
-    onRemove: () -> Unit,
     artworkRepository: ArtworkRepository,
     modifier: Modifier = Modifier
 ) {
@@ -100,6 +96,7 @@ fun QueueItem(
         modifier = modifier
             .fillMaxWidth()
             .clickable { onClick() }
+            .heightIn(min = 64.dp)
             .padding(vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -134,18 +131,10 @@ fun QueueItem(
         if (isCurrent) {
             Icon(
                 imageVector = Icons.Rounded.Equalizer,
-                contentDescription = null,
+                contentDescription = "Currently playing",
                 tint = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.size(24.dp)
             )
-        } else {
-            IconButton(onClick = onRemove) {
-                Icon(
-                    imageVector = Icons.Rounded.Close,
-                    contentDescription = "Remove",
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
         }
     }
 }

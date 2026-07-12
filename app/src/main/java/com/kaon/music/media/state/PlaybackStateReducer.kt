@@ -55,7 +55,8 @@ class PlaybackStateReducer {
         return when (event) {
             is PlaybackEvent.StatusChanged -> {
                 currentState.copy(
-                    isPlaying = event.status is PlaybackStatus.Playing
+                    isPlaying = event.status is PlaybackStatus.Playing,
+                    status = event.status
                 )
             }
             is PlaybackEvent.PositionChanged -> {

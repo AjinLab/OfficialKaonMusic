@@ -6,6 +6,7 @@ import com.kaon.music.media.manager.ShuffleMode
 import com.kaon.music.media.artwork.Artwork
 import com.kaon.music.media.artwork.ArtworkColors
 import androidx.compose.runtime.Immutable
+import com.kaon.music.media.state.PlaybackStatus
 
 @Immutable
 data class PlaybackState(
@@ -32,7 +33,8 @@ data class PlaybackState(
     val albumArtUri: String? = null,
     val artwork: Artwork = Artwork.None,
     val artworkColors: ArtworkColors? = null,
-    val audioInfo: com.kaon.music.media.codec.AudioInfo? = null
+    val audioInfo: com.kaon.music.media.codec.AudioInfo? = null,
+    val status: PlaybackStatus = PlaybackStatus.Idle
 ) {
     val currentSong: Song?
         get() = queue.getOrNull(currentIndex)

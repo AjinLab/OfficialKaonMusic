@@ -27,6 +27,9 @@ import com.kaon.music.media.artwork.ArtworkLoader
 import com.kaon.music.media.artwork.ArtworkRepository
 import com.kaon.music.media.artwork.ArtworkPaletteCache
 import com.kaon.music.media.library.MediaRepository
+import com.kaon.music.media.library.AlbumProvider
+import com.kaon.music.media.library.ArtistProvider
+import com.kaon.music.media.library.PlaylistProvider
 import com.kaon.music.media.service.PlaybackService
 import com.kaon.music.media.library.LibraryController
 import com.kaon.music.media.library.db.LibraryDatabase
@@ -95,7 +98,10 @@ class KaonKernel(private val context: Context) : Kernel {
         val paletteCache = ArtworkPaletteCache(albumArtCache)
         val artworkLoader = ArtworkLoader(paletteCache, artworkRepository)
 
-        val mediaRepository = MediaRepository(context, libraryDatabase)
+        val albumProvider = AlbumProvider(libraryDatabase)
+        val artistProvider = ArtistProvider(libraryDatabase)
+        val playlistProvider = PlaylistProvider(libraryDatabase)
+        val mediaRepository = MediaRepository(context, libraryDatabase, albumProvider, artistProvider, playlistProvider)
         val mediaManager = MediaManager(context, get(PlaybackEngine::class), queueManager, metadataReader, artworkLoader, queuePersistence, mediaRepository)
 
         register(AlbumArtCache::class, albumArtCache)
@@ -108,6 +114,9 @@ class KaonKernel(private val context: Context) : Kernel {
         register(MediaManager::class, mediaManager)
         register(PlayerController::class, mediaManager)
         register(LibraryDatabase::class, libraryDatabase)
+        register(AlbumProvider::class, albumProvider)
+        register(ArtistProvider::class, artistProvider)
+        register(PlaylistProvider::class, playlistProvider)
         register(MediaRepository::class, mediaRepository)
         register(LibraryController::class, mediaRepository)
     }

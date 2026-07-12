@@ -10,6 +10,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalFocusManager
@@ -24,6 +25,9 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import com.kaon.music.media.library.LibraryController
 import com.kaon.music.media.model.Song
 import com.kaon.music.media.search.*
+import com.kaon.music.plugins.defaultui.components.KaonEmptyState
+import com.kaon.music.plugins.defaultui.components.KaonSectionHeader
+import com.kaon.music.plugins.defaultui.components.KaonSimpleRow
 import com.kaon.music.plugins.defaultui.components.SongContextSheet
 import com.kaon.music.plugins.defaultui.screens.library.SongListItem
 import kotlinx.coroutines.flow.first
@@ -41,18 +45,24 @@ fun SearchScreen(
     playerController: PlayerController,
     artworkRepository: ArtworkRepository,
     onNavigateToAlbum: (Long) -> Unit,
-    onNavigateToArtist: (Long) -> Unit
+    onNavigateToArtist: (Long) -> Unit,
+    initialQuery: String = ""
 ) {
-    var query by remember { mutableStateOf("") }
+    var query by rememberSaveable { mutableStateOf(initialQuery) }
     val queryFlow = remember { MutableStateFlow("") }
     var searchResults by remember { mutableStateOf<List<SearchItem>>(emptyList()) }
     val focusManager = LocalFocusManager.current
     val coroutineScope = rememberCoroutineScope()
     val playbackState by playerController.playbackState.collectAsState()
     var activeSongForMenu by remember { mutableStateOf<Song?>(null) }
+    var isSearching by remember { mutableStateOf(false) }
 
     LaunchedEffect(query) {
         queryFlow.value = query
+        isSearching = query.isNotBlank()
+        if (query.isBlank()) {
+            searchResults = emptyList()
+        }
     }
 
     LaunchedEffect(Unit) {
@@ -68,6 +78,7 @@ fun SearchScreen(
             }
             .collect { results ->
                 searchResults = results
+                isSearching = false
             }
     }
 
@@ -119,6 +130,7 @@ fun SearchScreen(
             val folders = searchResults.filterIsInstance<FolderResult>()
 
             val listState = rememberLazyListState()
+            val hasResults = searchResults.isNotEmpty()
 
             LaunchedEffect(listState, songs) {
                 snapshotFlow { listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1 }
@@ -140,7 +152,41 @@ fun SearchScreen(
                     }
             }
 
-            LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
+            when {
+                query.isBlank() -> {
+                    KaonEmptyState(
+                        title = "Search your library",
+                        message = "Find songs, albums, artists, and folders on this device.",
+                        icon = Icons.Rounded.Search,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+
+                isSearching && !hasResults -> {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .weight(1f),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        CircularProgressIndicator()
+                    }
+                }
+
+                !hasResults -> {
+                    KaonEmptyState(
+                        title = "No results for \"$query\"",
+                        message = "Try another song, artist, album, or folder name.",
+                        icon = Icons.Rounded.SearchOff,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+
+                else -> LazyColumn(
+                    state = listState,
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(bottom = 166.dp)
+                ) {
                 // 1. Songs Section
                 if (songs.isNotEmpty()) {
                     item {
@@ -172,33 +218,13 @@ fun SearchScreen(
                         SearchCategoryHeader("Albums")
                     }
                     items(albums, key = { "album_${it.album.id}" }) { item ->
-                        Row(
+                        KaonSimpleRow(
+                            icon = Icons.Rounded.Album,
+                            title = item.album.title,
+                            subtitle = item.album.artistName,
                             modifier = Modifier
-                                .fillMaxWidth()
                                 .clickable { onNavigateToAlbum(item.album.id) }
-                                .padding(horizontal = 24.dp, vertical = 12.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(
-                                imageVector = Icons.Rounded.Album,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(36.dp)
-                            )
-                            Spacer(modifier = Modifier.width(16.dp))
-                            Column {
-                                Text(
-                                    text = item.album.title,
-                                    style = MaterialTheme.typography.bodyLarge,
-                                    fontWeight = FontWeight.Bold
-                                )
-                                Text(
-                                    text = item.album.artistName,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                        }
+                        )
                     }
                 }
 
@@ -208,33 +234,13 @@ fun SearchScreen(
                         SearchCategoryHeader("Artists")
                     }
                     items(artists, key = { "artist_${it.artist.id}" }) { item ->
-                        Row(
+                        KaonSimpleRow(
+                            icon = Icons.Rounded.Person,
+                            title = item.artist.name,
+                            subtitle = "${item.artist.songCount} songs",
                             modifier = Modifier
-                                .fillMaxWidth()
                                 .clickable { onNavigateToArtist(item.artist.id) }
-                                .padding(horizontal = 24.dp, vertical = 12.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(
-                                imageVector = Icons.Rounded.Person,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(36.dp)
-                            )
-                            Spacer(modifier = Modifier.width(16.dp))
-                            Column {
-                                Text(
-                                    text = item.artist.name,
-                                    style = MaterialTheme.typography.bodyLarge,
-                                    fontWeight = FontWeight.Bold
-                                )
-                                Text(
-                                    text = "${item.artist.songCount} songs",
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                        }
+                        )
                     }
                 }
 
@@ -244,9 +250,11 @@ fun SearchScreen(
                         SearchCategoryHeader("Folders")
                     }
                     items(folders, key = { "folder_${it.folder.path}" }) { item ->
-                        Row(
+                        KaonSimpleRow(
+                            icon = Icons.Rounded.Folder,
+                            title = java.io.File(item.folder.path).name,
+                            subtitle = item.folder.path,
                             modifier = Modifier
-                                .fillMaxWidth()
                                 .clickable {
                                     // For simplicity, just play the folder's songs
                                     coroutineScope.launch {
@@ -259,32 +267,10 @@ fun SearchScreen(
                                         }
                                     }
                                 }
-                                .padding(horizontal = 24.dp, vertical = 12.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(
-                                imageVector = Icons.Rounded.Folder,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(36.dp)
-                            )
-                            Spacer(modifier = Modifier.width(16.dp))
-                            Column {
-                                Text(
-                                    text = java.io.File(item.folder.path).name,
-                                    style = MaterialTheme.typography.bodyLarge,
-                                    fontWeight = FontWeight.Bold
-                                )
-                                Text(
-                                    text = item.folder.path,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    maxLines = 1
-                                )
-                            }
-                        }
+                        )
                     }
                 }
+            }
             }
         }
     }
@@ -305,13 +291,7 @@ fun SearchScreen(
 
 @Composable
 fun SearchCategoryHeader(title: String) {
-    Text(
-        text = title,
-        style = MaterialTheme.typography.labelSmall,
-        fontWeight = FontWeight.Bold,
-        color = MaterialTheme.colorScheme.primary,
-        modifier = Modifier.padding(horizontal = 24.dp, vertical = 16.dp)
-    )
+    KaonSectionHeader(title = title)
 }
 
 private fun parentPath(path: String): String {

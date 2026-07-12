@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -47,6 +48,7 @@ fun SongListItem(
     artworkRepository: ArtworkRepository,
     onFavoriteClick: (() -> Unit)? = null,
     onMenuClick: (() -> Unit)? = null,
+    trailingContent: (@Composable () -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val initialArtwork = remember(song.id, song.artworkHash) {
@@ -72,6 +74,7 @@ fun SongListItem(
     Row(
         modifier = modifier
             .fillMaxWidth()
+            .heightIn(min = 72.dp)
             .clickable { onClick() }
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
@@ -118,7 +121,11 @@ fun SongListItem(
             IconButton(onClick = onFavoriteClick) {
                 Icon(
                     imageVector = if (song.favorite) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
-                    contentDescription = "Favorite",
+                    contentDescription = if (song.favorite) {
+                        "Remove ${song.title} from liked songs"
+                    } else {
+                        "Add ${song.title} to liked songs"
+                    },
                     tint = if (song.favorite) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f),
                     modifier = Modifier.graphicsLayer {
                         scaleX = favoriteScale
@@ -132,10 +139,14 @@ fun SongListItem(
             IconButton(onClick = onMenuClick) {
                 Icon(
                     imageVector = Icons.Rounded.MoreHoriz,
-                    contentDescription = "More",
+                    contentDescription = "More options for ${song.title}",
                     tint = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f)
                 )
             }
+        }
+
+        if (trailingContent != null) {
+            trailingContent()
         }
     }
 }

@@ -18,6 +18,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.withContext
 import com.kaon.music.media.library.db.entity.SongEntity
 import com.kaon.music.media.library.db.entity.ArtistEntity
@@ -26,7 +27,10 @@ import com.kaon.music.media.library.db.entity.LibraryStateEntity
 
 class MediaRepository(
     private val context: Context,
-    private val db: LibraryDatabase
+    private val db: LibraryDatabase,
+    private val albumProvider: AlbumProvider,
+    private val artistProvider: ArtistProvider,
+    private val playlistProvider: PlaylistProvider
 ) : LibraryController {
     
     private val clock = java.time.Clock.systemDefaultZone()
@@ -49,53 +53,16 @@ class MediaRepository(
         songEntities.map { song ->
             val artistName = artistsMap[song.artistId]?.name ?: "Unknown Artist"
             val albumTitle = albumsMap[song.albumId]?.title ?: "Unknown Album"
-            mapEntityToSong(
-                song, 
-                artist = artistName, 
-                album = albumTitle, 
+            song.toSong(
+                artist = artistName,
+                album = albumTitle,
                 isFavorite = favoritesSet.contains(song.id)
             )
         }
     }.flowOn(Dispatchers.Default)
 
-    override val artists: Flow<List<Artist>> = combine(
-        db.artistDao().getAllArtists(),
-        db.songDao().getAllSongs()
-    ) { artistEntities, songEntities ->
-        val songGroups = songEntities.groupBy { it.artistId }
-        val albumGroups = songEntities.groupBy { it.artistId }.mapValues { entry ->
-            entry.value.map { it.albumId }.distinct().size
-        }
-        artistEntities.map { artist ->
-            Artist(
-                id = artist.id,
-                name = artist.name,
-                songCount = songGroups[artist.id]?.size ?: 0,
-                albumCount = albumGroups[artist.id] ?: 0
-            )
-        }
-    }.flowOn(Dispatchers.Default)
-
-    override val albums: Flow<List<Album>> = combine(
-        db.albumDao().getAllAlbums(),
-        db.artistDao().getAllArtists(),
-        db.songDao().getAllSongs()
-    ) { albumEntities, artistEntities, songEntities ->
-        val artistsMap = artistEntities.associateBy { it.id }
-        val songGroups = songEntities.groupBy { it.albumId }
-        albumEntities.map { album ->
-            Album(
-                id = album.id,
-                title = album.title,
-                artistName = artistsMap[album.artistId]?.name ?: "Unknown Artist",
-                artistId = album.artistId,
-                year = album.year?.toString(),
-                songCount = songGroups[album.id]?.size ?: 0,
-                artworkId = album.id
-            )
-        }
-    }.flowOn(Dispatchers.Default)
-
+    override val artists: Flow<List<Artist>> = artistProvider.artists
+    override val albums: Flow<List<Album>> = albumProvider.albums
     override val folders: Flow<List<Folder>> = songs.map { songList ->
         buildFolders(songList)
     }
@@ -184,7 +151,7 @@ class MediaRepository(
                         val artistName = artistsMap[it.artistId]?.name ?: "Unknown Artist"
                         val albumTitle = albumsMap[it.albumId]?.title ?: "Unknown Album"
                         com.kaon.music.media.search.SongResult(
-                            song = mapEntityToSong(it, artistName, albumTitle, favoritesSet.contains(it.id)),
+                            song = it.toSong(artistName, albumTitle, favoritesSet.contains(it.id)),
                             score = res.score
                         )
                     }
@@ -237,8 +204,7 @@ class MediaRepository(
         songEntities.map { song ->
             val artistName = artistsMap[song.artistId]?.name ?: "Unknown Artist"
             val albumTitle = albumsMap[song.albumId]?.title ?: "Unknown Album"
-            mapEntityToSong(
-                song,
+            song.toSong(
                 artist = artistName,
                 album = albumTitle,
                 isFavorite = favoritesSet.contains(song.id)
@@ -250,124 +216,15 @@ class MediaRepository(
         return db.songDao().getAllSongIds()
     }
 
-    override fun album(id: Long): Flow<Album?> {
-        return combine(db.albumDao().getAlbum(id), db.artistDao().getAllArtists(), db.songDao().getSongsByAlbum(id)) { album, artists, songs ->
-            album?.let {
-                Album(
-                    id = it.id,
-                    title = it.title,
-                    artistName = artists.firstOrNull { a -> a.id == it.artistId }?.name ?: "Unknown Artist",
-                    artistId = it.artistId,
-                    year = it.year?.toString(),
-                    songCount = songs.size,
-                    artworkId = it.id
-                )
-            }
-        }
-    }
+    override fun album(id: Long): Flow<Album?> = albumProvider.album(id)
+    override fun artist(id: Long): Flow<Artist?> = artistProvider.artist(id)
+    
+    override fun albumSongs(albumId: Long): Flow<List<Song>> = albumProvider.albumSongs(albumId)
+    override fun artistAlbums(artistId: Long): Flow<List<Album>> = artistProvider.artistAlbums(artistId)
+    override fun artistSongs(artistId: Long): Flow<List<Song>> = artistProvider.artistSongs(artistId)
 
-    override fun artist(id: Long): Flow<Artist?> {
-        return combine(db.artistDao().getArtist(id), db.songDao().getSongsByArtist(id), db.albumDao().getAlbumsByArtist(id)) { artist, songs, albums ->
-            artist?.let {
-                Artist(
-                    id = it.id,
-                    name = it.name,
-                    songCount = songs.size,
-                    albumCount = albums.size
-                )
-            }
-        }
-    }
-
-    override fun albumSongs(albumId: Long): Flow<List<Song>> {
-        return combine(
-            db.songDao().getSongsByAlbum(albumId),
-            db.artistDao().getAllArtists(),
-            db.albumDao().getAlbum(albumId),
-            db.favoriteDao().getFavoriteIdsFlow()
-        ) { songEntities, artistEntities, albumEntity, favoriteIds ->
-            val artistsMap = artistEntities.associateBy { it.id }
-            val albumTitle = albumEntity?.title ?: "Unknown Album"
-            val favoritesSet = favoriteIds.toSet()
-            
-            songEntities.map { song ->
-                val artistName = artistsMap[song.artistId]?.name ?: "Unknown Artist"
-                mapEntityToSong(
-                    song,
-                    artist = artistName,
-                    album = albumTitle,
-                    isFavorite = favoritesSet.contains(song.id)
-                )
-            }
-        }
-    }
-
-    override fun artistAlbums(artistId: Long): Flow<List<Album>> {
-        return combine(
-            db.albumDao().getAlbumsByArtist(artistId),
-            db.artistDao().getAllArtists(),
-            db.songDao().getAllSongs()
-        ) { albumEntities, artistEntities, songEntities ->
-            val artistsMap = artistEntities.associateBy { it.id }
-            val songGroups = songEntities.groupBy { it.albumId }
-            albumEntities.map { album ->
-                Album(
-                    id = album.id,
-                    title = album.title,
-                    artistName = artistsMap[album.artistId]?.name ?: "Unknown Artist",
-                    artistId = album.artistId,
-                    year = album.year?.toString(),
-                    songCount = songGroups[album.id]?.size ?: 0,
-                    artworkId = album.id
-                )
-            }
-        }
-    }
-
-    override fun artistSongs(artistId: Long): Flow<List<Song>> {
-        return combine(
-            db.songDao().getSongsByArtist(artistId),
-            db.artistDao().getAllArtists(),
-            db.albumDao().getAllAlbums(),
-            db.favoriteDao().getFavoriteIdsFlow()
-        ) { songEntities, artistEntities, albumEntities, favoriteIds ->
-            val artistsMap = artistEntities.associateBy { it.id }
-            val albumsMap = albumEntities.associateBy { it.id }
-            val favoritesSet = favoriteIds.toSet()
-            
-            songEntities.map { song ->
-                val artistName = artistsMap[song.artistId]?.name ?: "Unknown Artist"
-                val albumTitle = albumsMap[song.albumId]?.title ?: "Unknown Album"
-                mapEntityToSong(
-                    song,
-                    artist = artistName,
-                    album = albumTitle,
-                    isFavorite = favoritesSet.contains(song.id)
-                )
-            }
-        }
-    }
-
-    override fun albumDetail(id: Long): Flow<AlbumDetail> {
-        return album(id).combine(albumSongs(id)) { album, songs ->
-            AlbumDetail(
-                album = album ?: throw IllegalStateException("Album not found"),
-                songs = songs,
-                totalDuration = songs.sumOf { it.duration }
-            )
-        }
-    }
-
-    override fun artistDetail(id: Long): Flow<ArtistDetail> {
-        return combine(artist(id), artistAlbums(id), artistSongs(id)) { artist, albums, songs ->
-            ArtistDetail(
-                artist = artist ?: throw IllegalStateException("Artist not found"),
-                albums = albums,
-                songs = songs,
-                totalDuration = songs.sumOf { it.duration }
-            )
-        }
-    }
+    override fun albumDetail(id: Long): Flow<AlbumDetail> = albumProvider.albumDetail(id)
+    override fun artistDetail(id: Long): Flow<ArtistDetail> = artistProvider.artistDetail(id)
 
     override suspend fun genres(): List<Genre> = emptyList()
 
@@ -375,56 +232,13 @@ class MediaRepository(
         buildFolders(songs.first())
     }
 
-    override fun playlistsFlow(): Flow<List<Playlist>> {
-        return combine(
-            db.playlistDao().getAllPlaylists(),
-            db.playlistDao().getAllPlaylistSongs()
-        ) { playlists, playlistSongs ->
-            val counts = playlistSongs.groupBy { it.playlistId }.mapValues { it.value.size }
-            playlists.map {
-                Playlist(
-                    id = it.id,
-                    name = it.name,
-                    songCount = counts[it.id] ?: 0
-                )
-            }
-        }
-    }
-
-    override suspend fun createPlaylist(name: String): Long = withContext(Dispatchers.IO) {
-        db.playlistDao().upsertPlaylist(com.kaon.music.media.library.db.entity.PlaylistEntity(name = name))
-    }
-
-    override suspend fun deletePlaylist(id: Long) = withContext(Dispatchers.IO) {
-        db.playlistDao().deletePlaylist(id)
-    }
-
-    override suspend fun addSongsToPlaylist(playlistId: Long, songIds: List<Long>) = withContext(Dispatchers.IO) {
-        val currentSongs = db.playlistDao().getPlaylistSongs(playlistId).first()
-        val startPos = currentSongs.size
-        val entities = songIds.mapIndexed { index, songId ->
-            com.kaon.music.media.library.db.entity.PlaylistSongEntity(
-                playlistId = playlistId,
-                songId = songId,
-                position = startPos + index
-            )
-        }
-        db.playlistDao().upsertPlaylistSongs(entities)
-    }
-
-    override suspend fun removeSongFromPlaylist(playlistId: Long, songId: Long) = withContext(Dispatchers.IO) {
-        db.playlistDao().deletePlaylistSong(playlistId, songId)
-    }
-
-    override fun playlistSongs(playlistId: Long): Flow<List<Song>> {
-        return combine(
-            db.playlistDao().getPlaylistSongs(playlistId),
-            songs
-        ) { playlistSongs, allSongs ->
-            val songMap = allSongs.associateBy { it.id }
-            playlistSongs.sortedBy { it.position }.mapNotNull { songMap[it.songId] }
-        }
-    }
+    override fun playlistsFlow(): Flow<List<Playlist>> = playlistProvider.playlistsFlow()
+    override suspend fun createPlaylist(name: String): Long = playlistProvider.createPlaylist(name)
+    override suspend fun deletePlaylist(id: Long) = playlistProvider.deletePlaylist(id)
+    override suspend fun addSongsToPlaylist(playlistId: Long, songIds: List<Long>) = playlistProvider.addSongsToPlaylist(playlistId, songIds)
+    override suspend fun removeSongFromPlaylist(playlistId: Long, songId: Long) = playlistProvider.removeSongFromPlaylist(playlistId, songId)
+    override fun playlistSongs(playlistId: Long): Flow<List<Song>> = playlistProvider.playlistSongs(playlistId)
+    override fun observePlaylist(id: Long): Flow<Playlist?> = playlistProvider.observePlaylist(id)
 
     override fun favorites(): Flow<List<Song>> = songs.map { songList ->
         songList.filter { it.favorite }
@@ -463,41 +277,6 @@ class MediaRepository(
             e.printStackTrace()
             false
         }
-    }
-
-    private fun mapEntityToSong(
-        it: com.kaon.music.media.library.db.entity.SongEntity,
-        artist: String = "",
-        album: String = "",
-        isFavorite: Boolean = false
-    ): Song {
-        return Song(
-            id = it.id,
-            mediaStoreId = it.id,
-            uri = it.uri,
-            path = it.path,
-            title = it.title,
-            artist = artist.takeIf { it.isNotBlank() } ?: "Unknown Artist",
-            album = album.takeIf { it.isNotBlank() } ?: "Unknown Album",
-            albumArtist = null,
-            albumId = it.albumId,
-            artistId = it.artistId,
-            genre = it.genre,
-            composer = it.composer,
-            year = null,
-            track = it.trackNumber,
-            disc = it.discNumber,
-            duration = it.duration,
-            bitrate = null,
-            sampleRate = null,
-            mimeType = it.mimeType,
-            size = it.size,
-            dateAdded = it.dateAdded,
-            dateModified = 0,
-            lastScanned = 0,
-            artworkPath = null,
-            favorite = isFavorite
-        )
     }
 
     private fun buildFolders(songList: List<Song>): List<Folder> {

@@ -1,7 +1,6 @@
 package com.kaon.music.plugins.defaultui.screens.artist
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -10,8 +9,6 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
-import androidx.compose.material.icons.rounded.PlayArrow
-import androidx.compose.material.icons.rounded.Shuffle
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -25,15 +22,15 @@ import com.kaon.music.media.artwork.ArtworkLoader
 import com.kaon.music.media.artwork.ArtworkRepository
 import com.kaon.music.media.artwork.ArtworkRequest
 import com.kaon.music.media.library.LibraryController
-import com.kaon.music.plugins.defaultui.components.ArtworkImage
 import androidx.compose.foundation.lazy.rememberLazyListState
 import kotlinx.coroutines.flow.distinctUntilChanged
 import com.kaon.music.plugins.defaultui.screens.library.AlbumGridItem
 import com.kaon.music.plugins.defaultui.screens.library.SongListItem
 import com.kaon.music.plugins.defaultui.util.FormatUtils
 import com.kaon.music.media.artwork.Artwork
-import com.kaon.music.media.artwork.ArtworkSize
 import com.kaon.music.plugins.defaultui.components.ArtworkImage
+import com.kaon.music.plugins.defaultui.components.KaonPlaybackActionRow
+import com.kaon.music.plugins.defaultui.components.KaonSectionHeader
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -109,9 +106,11 @@ fun ArtistDetailScreen(
         artistDetail?.let { detail ->
             LazyColumn(
                 state = listState,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(paddingValues)
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(
+                    top = paddingValues.calculateTopPadding(),
+                    bottom = paddingValues.calculateBottomPadding() + 86.dp
+                )
             ) {
                 // Header details
                 item {
@@ -171,51 +170,27 @@ fun ArtistDetailScreen(
 
                         Spacer(modifier = Modifier.height(24.dp))
 
-                        // Controls
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.Center
-                        ) {
-                            Button(
-                                onClick = {
-                                    playerController.setQueue(detail.songs, 0)
-                                    playerController.play(0)
-                                },
-                                modifier = Modifier.weight(1f)
-                            ) {
-                                Icon(Icons.Rounded.PlayArrow, contentDescription = null)
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text("Play All")
-                            }
-
-                            Spacer(modifier = Modifier.width(16.dp))
-
-                            OutlinedButton(
-                                onClick = {
-                                    val shuffled = detail.songs.shuffled()
-                                    playerController.setQueue(shuffled, 0)
-                                    playerController.setShuffle(true)
-                                    playerController.play(0)
-                                },
-                                modifier = Modifier.weight(1f)
-                            ) {
-                                Icon(Icons.Rounded.Shuffle, contentDescription = null)
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text("Shuffle")
-                            }
-                        }
+                        KaonPlaybackActionRow(
+                            onPlay = {
+                                playerController.setQueue(detail.songs, 0)
+                                playerController.play(0)
+                            },
+                            onShuffle = {
+                                val shuffled = detail.songs.shuffled()
+                                playerController.setQueue(shuffled, 0)
+                                playerController.setShuffle(true)
+                                playerController.play(0)
+                            },
+                            enabled = detail.songs.isNotEmpty(),
+                            contentPadding = PaddingValues(0.dp)
+                        )
                     }
                 }
 
                 // Albums horizontal list
                 if (detail.albums.isNotEmpty()) {
                     item {
-                        Text(
-                            text = "Albums",
-                            style = MaterialTheme.typography.titleLarge,
-                            fontWeight = FontWeight.Bold,
-                            modifier = Modifier.padding(horizontal = 24.dp, vertical = 12.dp)
-                        )
+                        KaonSectionHeader(title = "Albums")
                         
                         LazyRow(
                             contentPadding = PaddingValues(horizontal = 16.dp),
@@ -237,12 +212,7 @@ fun ArtistDetailScreen(
                 // Songs list
                 if (detail.songs.isNotEmpty()) {
                     item {
-                        Text(
-                            text = "Songs",
-                            style = MaterialTheme.typography.titleLarge,
-                            fontWeight = FontWeight.Bold,
-                            modifier = Modifier.padding(horizontal = 24.dp, vertical = 12.dp)
-                        )
+                        KaonSectionHeader(title = "Songs")
                     }
 
                     itemsIndexed(detail.songs, key = { _, song -> song.id }) { index, song ->

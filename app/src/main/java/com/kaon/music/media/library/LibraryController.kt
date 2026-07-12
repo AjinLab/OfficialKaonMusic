@@ -42,6 +42,7 @@ interface LibraryController {
     suspend fun addSongsToPlaylist(playlistId: Long, songIds: List<Long>)
     suspend fun removeSongFromPlaylist(playlistId: Long, songId: Long)
     fun playlistSongs(playlistId: Long): Flow<List<Song>>
+    fun observePlaylist(id: Long): Flow<Playlist?>
     
     fun favorites(): Flow<List<Song>>
     suspend fun toggleFavorite(songId: Long)

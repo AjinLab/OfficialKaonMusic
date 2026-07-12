@@ -19,6 +19,7 @@ import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -32,6 +33,8 @@ import com.kaon.music.media.artwork.ArtworkRequest
 import com.kaon.music.media.library.LibraryController
 import com.kaon.music.media.model.Artist
 import com.kaon.music.media.model.Song
+import com.kaon.music.plugins.defaultui.components.KaonEmptyState
+import com.kaon.music.plugins.defaultui.components.KaonSimpleRow
 import com.kaon.music.plugins.defaultui.components.SongContextSheet
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -49,7 +52,7 @@ fun LibraryScreen(
     onNavigateToAlbum: (Long) -> Unit,
     onNavigateToArtist: (Long) -> Unit
 ) {
-    var selectedTabIndex by remember { mutableIntStateOf(0) }
+    var selectedTabIndex by rememberSaveable { mutableIntStateOf(0) }
     val tabs = listOf("Songs", "Albums", "Artists", "Folders")
     val playbackState by playerController.playbackState.collectAsState()
     val coroutineScope = rememberCoroutineScope()
@@ -138,9 +141,10 @@ fun LibraryScreen(
                         }
                     } else if (songs != null) {
                         if (songs!!.isEmpty()) {
-                            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                                Text("No songs found. Rescan in settings.", color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f))
-                            }
+                            KaonEmptyState(
+                                title = "No songs found",
+                                message = "Rescan your media library from Settings."
+                            )
                         } else {
                             val songsListState = rememberLazyListState()
                             LaunchedEffect(songsListState, songs) {
@@ -161,7 +165,11 @@ fun LibraryScreen(
                                         }
                                     }
                             }
-                            LazyColumn(state = songsListState, modifier = Modifier.fillMaxSize()) {
+                            LazyColumn(
+                                state = songsListState,
+                                modifier = Modifier.fillMaxSize(),
+                                contentPadding = PaddingValues(bottom = 166.dp)
+                            ) {
                                 itemsIndexed(songs!!, key = { _, song -> song.id }) { index, song ->
                                     SongListItem(
                                         song = song,
@@ -188,9 +196,7 @@ fun LibraryScreen(
                 1 -> {
                     val albums by libraryController.albums.collectAsState(initial = emptyList())
                     if (albums.isEmpty()) {
-                        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                            Text("No albums found", color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f))
-                        }
+                        KaonEmptyState(title = "No albums found")
                     } else {
                         val albumsGridState = rememberLazyGridState()
                         LaunchedEffect(albumsGridState, albums) {
@@ -214,7 +220,7 @@ fun LibraryScreen(
                             state = albumsGridState,
                             columns = GridCells.Fixed(2),
                             modifier = Modifier.fillMaxSize(),
-                            contentPadding = PaddingValues(8.dp)
+                            contentPadding = PaddingValues(start = 8.dp, end = 8.dp, top = 8.dp, bottom = 166.dp)
                         ) {
                             items(albums, key = { it.id }) { album ->
                                 AlbumGridItem(
@@ -229,11 +235,12 @@ fun LibraryScreen(
                 2 -> {
                     val artists by libraryController.artists.collectAsState(initial = emptyList())
                     if (artists.isEmpty()) {
-                        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                            Text("No artists found", color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f))
-                        }
+                        KaonEmptyState(title = "No artists found")
                     } else {
-                        LazyColumn(modifier = Modifier.fillMaxSize()) {
+                        LazyColumn(
+                            modifier = Modifier.fillMaxSize(),
+                            contentPadding = PaddingValues(bottom = 166.dp)
+                        ) {
                             items(artists, key = { it.id }) { artist ->
                                 ArtistListItem(
                                     artist = artist,
@@ -289,42 +296,26 @@ fun LibraryScreen(
                         }
 
                         if (folders.isEmpty() && songsInFolder.isEmpty()) {
-                            Box(modifier = Modifier.fillMaxSize().weight(1f), contentAlignment = Alignment.Center) {
-                                Text("No folders found", color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f))
-                            }
+                            KaonEmptyState(
+                                title = "No folders found",
+                                modifier = Modifier.weight(1f)
+                            )
                         } else {
-                            LazyColumn(modifier = Modifier.fillMaxSize().weight(1f)) {
+                            LazyColumn(
+                                modifier = Modifier.fillMaxSize().weight(1f),
+                                contentPadding = PaddingValues(bottom = 166.dp)
+                            ) {
                                 items(folders, key = { it }) { path ->
                                     val name = java.io.File(path).name
                                     val count = folderSongCounts[path] ?: 0
                                     
-                                    Row(
+                                    KaonSimpleRow(
+                                        icon = Icons.Rounded.Folder,
+                                        title = name,
+                                        subtitle = "$count songs",
                                         modifier = Modifier
-                                            .fillMaxWidth()
                                             .clickable { currentFolder = path }
-                                            .padding(horizontal = 16.dp, vertical = 12.dp),
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Rounded.Folder,
-                                            contentDescription = null,
-                                            tint = MaterialTheme.colorScheme.primary,
-                                            modifier = Modifier.size(40.dp)
-                                        )
-                                        Spacer(modifier = Modifier.width(16.dp))
-                                        Column {
-                                            Text(
-                                                text = name,
-                                                style = MaterialTheme.typography.bodyLarge,
-                                                fontWeight = FontWeight.Bold
-                                            )
-                                            Text(
-                                                text = "$count songs",
-                                                style = MaterialTheme.typography.bodySmall,
-                                                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f)
-                                            )
-                                        }
-                                    }
+                                    )
                                 }
 
                                 itemsIndexed(songsInFolder, key = { _, s -> s.id }) { index, song ->
