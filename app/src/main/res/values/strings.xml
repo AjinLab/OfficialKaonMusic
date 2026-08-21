@@ -1,0 +1,14 @@
+<resources>
+    <string name="app_name">Kaon Music</string>
+    <string name="tracks_tab">Tracks</string>
+    <string name="albums_tab">Albums</string>
+    <string name="artists_tab">Artists</string>
+    <string name="search_hint">Search songs, artists, albums…</string>
+    <string name="unknown_artist">Unknown Artist</string>
+    <string name="unknown_album">Unknown Album</string>
+    <string name="unknown_title">Unknown Title</string>
+    <string name="now_playing">Now Playing</string>
+    <string name="no_tracks_found">No music files found on device.</string>
+    <string name="permission_rationale">Kaon Music requires audio storage permission to discover and play your local music library.</string>
+    <string name="grant_permission">Grant Access</string>
+</resources>
