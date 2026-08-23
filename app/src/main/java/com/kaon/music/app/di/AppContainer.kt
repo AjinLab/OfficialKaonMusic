@@ -37,13 +37,22 @@ class AppContainer(private val context: Context) {
         TrackRepository(
             trackDao = database.trackDao(),
             favoriteDao = database.favoriteDao(),
-            syncEngine = syncEngine
+            syncEngine = syncEngine,
+            playEventDao = database.playEventDao()
         )
     }
 
     val historyRepository: HistoryRepository by lazy {
         HistoryRepository(
             playEventDao = database.playEventDao()
+        )
+    }
+
+    val playlistRepository: com.kaon.music.core.data.repository.PlaylistRepository by lazy {
+        com.kaon.music.core.data.repository.PlaylistRepository(
+            playlistDao = database.playlistDao(),
+            trackDao = database.trackDao(),
+            favoriteDao = database.favoriteDao()
         )
     }
 

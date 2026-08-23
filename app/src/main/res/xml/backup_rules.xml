@@ -1,7 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <full-backup-content>
-    <!-- Include user-owned database tables & preferences; exclude temporary caches -->
+    <!-- Include user-owned database tables & preferences -->
     <include domain="database" path="kaon_music.db" />
     <include domain="sharedpref" path="." />
-    <exclude domain="cache" path="." />
 </full-backup-content>

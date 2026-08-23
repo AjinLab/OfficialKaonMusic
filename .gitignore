@@ -11,7 +11,16 @@
 *.aab
 
 # Built application files
+build/
+**/build/
 app/build/
+baselineprofile/build/
+
+# Signing keys & secrets
+*.jks
+*.keystore
+release-keystore.properties
 
 # Do NOT ignore Room schemas
 !app/schemas/
+
