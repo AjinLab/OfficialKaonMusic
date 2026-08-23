@@ -21,3 +21,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "KaonMusic"
 include(":app")
+include(":baselineprofile")

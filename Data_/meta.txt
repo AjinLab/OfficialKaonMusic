@@ -1,0 +1,176 @@
+For Kaon, the biggest architectural risk is not building it too simply. It's building it too cleverly before you have a real playback loop.
+
+Your vision is coherent, but it contains three different products in one paragraph: a lightweight local player, a metadata intelligence system, and an extensible personalization platform. If you let the second two drive the first architecture, you will end up with a plugin kernel for a player that doesn't yet play reliably.
+
+### 1. Analysis of vision and requirements
+
+The actual product you are describing for V1 is:
+
+A local-only Android music player that discovers files via MediaStore, organizes them into tracks/albums/artists, plays them reliably via Media3 in background with proper audio focus and MediaSession, and shows artwork without janking.
+
+Everything else - enrichment, recommendations, online services, themes, streaming, dynamic UI - is a possible future direction, not a current requirement.
+
+That matters because the qualities you want - fast, responsive on modest hardware, predictable lifecycle, low battery - come from *absence* of infrastructure, not addition of it.
+
+### 2. Contradictions, ambiguous areas, and risks
+
+**Contradictions:**
+* "Lightweight" vs "deeply customizable + plugin system + design-token theme system + recommendation engine + Ktor + Hilt + WorkManager" in V1. Each one adds hidden coupling and startup cost.
+* "One authoritative source of playback state" vs "queue persistence + Media3 queue". You cannot have two state machines both claiming authority.
+* "UI highly customizable while remaining maintainable" vs single developer, limited time. Customization is a maintenance multiplier.
+
+**Ambiguities that will break you if you invent answers:**
+* **Metadata identity:** How do you know a track is the same track after rename/move/tag edit? URI is not stable. MediaStore ID is not stable across devices. Hash is expensive. You need a V1 definition.
+* **Library sync:** What is "reliably detected"? ContentObserver misses events under pressure. Do you do full rescan on every launch? Incremental? Hybrid?
+* **Queue ownership:** What survives process death? Full queue + shuffle order + repeat mode + position? Or just last track?
+* **Playback model:** Does Kaon own queue and tell Media3 what to play one-by-one, or does Kaon push full queue to Media3 and let it own shuffle/repeat?
+
+**Top architectural risks:**
+1. Letting generated code and Media3 dictate your boundaries. If UI observes `Player` directly, you get lifecycle bugs forever.
+2. Room schema locked too early around a highly normalized artist/album/genre model. Migrations will kill velocity.
+3. Artwork as an afterthought. Repeated decoding of 4000x4000 embedded art is the #1 cause of jank and OOM in music apps.
+4. Over-modularization too early. 8 Gradle modules for 1 developer = you pay build complexity tax with zero team-scaling benefit.
+5. Navigation 3. On compileSdk 36 it exists, but it's alpha-level stable, docs are thin, and tooling support is poor. It can lock your adaptive layout + mini-player behavior into an immature API.
+
+### 3. Actual requirements vs assumptions vs long-term ideas
+
+**Actual for V1 - must decide now:**
+* Local discovery via MediaStore, large libraries must remain usable
+* Reliable Media3 playback, background, MediaSession, notification, headset/BT, audio focus, becoming-noisy
+* Queue as system concern: add, play next, remove, reorder, clear, shuffle, repeat
+* Basic metadata normalization for missing/inconsistent tags
+* Efficient artwork loading
+* One source of truth for playback
+* Graceful degradation
+
+**Assumptions - challenge before building:**
+* Hilt needed. For a single dev app, manual constructor injection + a small AppContainer is more explicit and testable. Hilt hides dependency direction.
+* Ktor needed. You have no online requirement in V1.
+* WorkManager needed for scanning. Initial scan is foreground work tied to UI/permission. WorkManager is for deferred periodic rescan only.
+* Domain Use-Cases for every operation add value. They often don't. A `PlayTrackUseCase` class that just calls `player.play()` is ceremony.
+
+**Long-term vision - explicitly defer:**
+Recommendation engine, ML, metadata enrichment, external artwork/lyrics services, streaming, runtime plugins, design-token runtime theming beyond Material 3, full-text search engine, advanced customization.
+
+### 4. What matters now vs what stays open
+
+**Decide now:**
+* Module/package structure and dependency rule
+* Playback state ownership model
+* Metadata identity for V1
+* Library sync strategy for V1
+* Queue persistence scope
+* Minimal Room schema v1
+* Artwork caching key strategy
+* Error propagation strategy
+
+**Explicitly leave open:**
+* Plugin system - yes/no and mechanism
+* Recommendation algorithm
+* Online service abstraction
+* Advanced theme system
+* Whether search needs FTS
+* Personalization retention/aggregation
+* Multi-module split
+
+If you don't decide it now, don't build scaffolding for it.
+
+### 5. Smallest sensible architectural foundation
+
+Start with **one Gradle module** with strict package boundaries enforced by code review, not Gradle. Split only when build time > ~2min or you have a true independent deliverable like `macrobenchmark`.
+
+Proposed dependency direction:
+
+```
+ui -> playback.facade, library.facade, core.model
+playback -> library.facade (read-only Track), core.model
+library -> data.db, core.model
+artwork -> core.model, data.db (for keys only)
+data.db -> core.model
+core.model -> nothing (pure Kotlin data classes, no Android deps)
+```
+
+No circular dependencies. Playback never writes to library DB. Library never knows about Player.
+
+Three core engines for V1, each owns its responsibility:
+
+1.  **LibraryEngine:** Observes MediaStore, runs initial scan + incremental sync on IO dispatcher, writes to Room. Exposes `Flow<List<Track>>` and `Flow<LibraryState>`.
+2.  **PlaybackEngine:** Lives inside `MediaSessionService`. Wraps ExoPlayer. Owns ONE `PlaybackState` data class (track, position, isPlaying, repeat, shuffle, queue). This is the source of truth. Media3's `Player` is an implementation detail, not exposed to UI.
+3.  **QueueEngine:** Part of PlaybackEngine in V1. Owns atomic mutations, persists queue snapshot (list of trackIds + index + position) to DataStore, restores it without auto-playing.
+
+Artwork is a subsystem, not a library: `ArtworkResolver` takes `artworkKey -> Coil request`. Key = `albumId + sizeBucket`. Never decode in Room transaction.
+
+### 6. Initial repository structure
+
+```
+/app
+  /src/main/kotlin/com/kaon
+    /core/model          // Track, Album, Artist, QueueSnapshot, PlaybackState - no Android imports
+    /core/common         // Result type, DispatcherProvider
+    /data/db             // Room entities, Daos, migrations - maps to core.model
+    /library             // MediaStore scanner, sync engine, repository impl
+    /playback            // MediaSessionService, PlayerHolder, QueueManager, PlaybackFacade
+    /artwork             // Resolver, cache policy
+    /ui                  // Compose, ViewModels, Nav host, design system tokens
+```
+
+No `/domain/usecase` package for V1. Put logic in Engine/Facade. When a piece of logic has 2+ callers, needs unit testing independent of Android, and has clear inputs/outputs, *then* extract a use-case.
+
+### 7. First decisions to settle before any code
+
+**Decision: Module structure**
+Reasoning: 1 dev, build cache benefit of modules is minimal, cost of inter-module navigation, Hilt graph across modules is high.
+Alternatives: 3 modules (app, core, feature) / 8 modules (by layer)
+Trade-offs: Multi-module gives build parallelism but adds version catalog hell and slows iteration.
+Recommendation: Single module + `package` lint rule. Re-evaluate at 50k LOC.
+
+**Decision: Playback state ownership**
+Reasoning: If UI observes ExoPlayer directly, you get two competing truths after process death.
+Alternatives: A) Media3 is truth, Kaon mirrors. B) Kaon is truth, Media3 is dumb renderer.
+Trade-offs: A is easier initially, breaks on restore. B requires translation layer.
+Recommendation: B. Kaon owns `PlaybackStateFlow`, pushes single item or small queue to Media3. Media3 events update Kaon state via single reducer. No direct `player.getMediaItemCount()` in UI.
+
+**Decision: Metadata identity V1**
+Reasoning: Need stable ID for queue persistence and favorites even if file renames.
+Alternatives: MediaStore ID, file path, hash, fingerprint.
+Trade-offs: MediaStore ID changes on rescan, path changes on move, hash is IO heavy.
+Recommendation: V1 composite: `stableId = MediaStoreId + hash of (file size + duration)` stored in Room. On scan, try to match by path then by size+duration to preserve stableId. No fingerprint yet. Explicitly document this as temporary.
+
+**Decision: Library sync**
+Reasoning: ContentObserver is lossy, full scan is expensive for 10k+ tracks.
+Alternatives: Full scan on every launch, pure observer, WorkManager periodic.
+Trade-offs: Full scan is reliable but slow, observer is fast but lossy.
+Recommendation: Hybrid: Initial full scan once with checkpoints (resumable), then ContentObserver + debounce (2s) that triggers incremental scan of changed buckets only. Periodic WorkManager rescan every 24h, not critical path.
+
+**Decision: Queue persistence**
+Reasoning: Persisting full Media3 queue with custom objects leads to conflict.
+Alternatives: Persist nothing, persist full queue + position, persist only last track.
+Trade-offs: Full persistence complex but expected by users.
+Recommendation: Persist `QueueSnapshot(trackIds: List<Long>, index: Int, positionMs: Long, shuffle: Boolean, repeat: RepeatMode)` in DataStore as JSON via kotlinx.serialization. On restore, re-hydrate tracks from DB that still exist. If missing, skip. Do NOT auto-resume playback, wait for user.
+
+**Decision: DI**
+Reasoning: Hilt obscures ownership for small team, adds kapt/KSP cost.
+Alternatives: Hilt, manual AppContainer.
+Trade-offs: Hilt gives scoping but hides graph.
+Recommendation: Start with manual `AppContainer` holding singletons (db, scanners, playerHolder). If graph exceeds ~15 dependencies and you feel pain, migrate to Hilt. Don't start with it just because it's in the stack table.
+
+**Decision: Navigation**
+Reasoning: Navigation 3 is the future for adaptive + scene-based nav, but its API for mini-player + full player shared element is unproven.
+Alternatives: Navigation Compose (stable), Navigation 3.
+Trade-offs: Stable vs future-proof.
+Recommendation: Isolate navigation in ONE `KaonNavHost` composable. Implement with Navigation Compose for V1 to ship. Put an interface in front so you can swap to Navigation 3 in a branch and evaluate mini-player behavior without rewriting screens.
+
+### 8. What should NOT influence initial architecture
+
+Do NOT let these shape your tables, packages, or services yet:
+* Runtime plugin system - ordinary interfaces are enough
+* Recommendation engine - log `playCount` and `lastPlayedAt` only
+* Ktor, online metadata, lyrics, artwork services
+* Streaming subsystem
+* Advanced design-token runtime theming beyond light/dark Material 3
+* Full-text search (Room `LIKE %query%` is enough for 10k tracks)
+* Custom UI layout engine
+
+If you build abstractions for them now, you will maintain them for 6 months before you have a real requirement.
+
+Next step I suggest: we lock the V1 Room schema (tracks, albums, artists minimal) and the `PlaybackState` data class. Those two decisions freeze your dependency direction. Should we draft those?

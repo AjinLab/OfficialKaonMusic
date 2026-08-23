@@ -1,0 +1,410 @@
+I’m treating the vision as product intent, not as an architectural checklist. The first architecture should support one clear slice of Kaon:
+
+> **A reliable local music player with a browsable, persistable library and a predictable queue.**
+
+Everything else should be deferred until that slice is stable.
+
+---
+
+## 1. What matters now vs. what is future scope
+
+### Current product needs
+
+These are the requirements that actually shape the first architecture:
+
+- Local audio discovery through Android MediaStore.
+- Basic metadata normalization: title, artist, album, genre, duration, track/disc number, year.
+- Persistent local library.
+- Browsing tracks, albums, artists, genres.
+- Playback through Media3/ExoPlayer.
+- Background playback with MediaSession, notification, audio focus, headset/bluetooth controls.
+- Reliable queue operations: add, remove, reorder, clear, play next.
+- Artwork loading with caching and graceful failure.
+- Light/dark theme and basic adaptive layouts.
+- Manual or incremental library refresh without rescanning everything unnecessarily.
+
+### Long-term capabilities that should not drive the initial design
+
+These are real parts of the vision, but they are **not requirements yet**:
+
+- Playlists, favorites, history, recently added, most played.
+- Personalization and recommendations.
+- Online metadata, artwork, lyrics.
+- Streaming.
+- Runtime plugin architecture.
+- Dynamic UI customization beyond design tokens.
+- Advanced search indexing.
+- Audio fingerprinting.
+- Android Auto as a distinct subsystem.
+- Multi-module architecture.
+
+I am assuming the first milestone is local playback plus a basic library. If playlists or history are part of the first release, that changes the initial schema and queue design.
+
+---
+
+## 2. Contradictions, ambiguities, and architectural risks
+
+### 2.1 “Reliable incremental library sync” vs. avoiding full scans
+
+MediaStore change detection is not perfectly reliable in every Android version or OEM. A `ContentObserver` can miss changes, especially if the app process is dead.
+
+The safe initial approach is hybrid:
+
+- Full scan only on first run or explicit rescan.
+- On later launches, query by `DATE_MODIFIED` since the last successful sync.
+- Use a `ContentObserver` while the app is alive to trigger debounced refreshes.
+- Do not rely solely on `ContentObserver`.
+- Do not perform a full scan on every app launch.
+
+### 2.2 Queue ownership: Kaon vs. Media3
+
+Media3 already owns a playlist and player state. If Kaon also keeps a competing queue and tries to synchronize both directions, the system becomes fragile.
+
+The clean solution is:
+
+- Kaon owns the **queue order and queue operations**.
+- Media3 owns **player state**: `isPlaying`, position, duration, current media item, shuffle/repeat.
+- Kaon sends queue snapshots to Media3.
+- UI observes a single `PlaybackController` that merges Media3 state with Kaon queue state.
+
+### 2.3 Metadata identity
+
+The vision says files may move, be renamed, or have metadata changes. But reliable cross-move identity requires audio fingerprints or hashes, which are expensive and premature.
+
+For the first version:
+
+- Use MediaStore `_ID` as the local identity.
+- Store content URI, file size, date modified, and raw metadata.
+- Treat MediaStore rows as authoritative for the current device.
+- Do not build fingerprinting yet.
+
+This may produce duplicates when files move or are renamed. That is an accepted trade-off for now.
+
+### 2.4 Customization vs. maintainability
+
+The vision includes deep customization, but a runtime plugin system would dominate the architecture and create enormous maintenance cost before the product has proven its core value.
+
+Initial customization should be limited to design tokens: colors, typography, spacing, shapes, light/dark theme.
+
+A plugin system should not be introduced until there is a concrete extension requirement that ordinary interfaces and modules cannot satisfy.
+
+### 2.5 Technology stack vs. minimal initial need
+
+The preferred stack includes Hilt, WorkManager, Ktor, and kotlinx.serialization.
+
+For the initial slice:
+
+- Hilt is not required.
+- WorkManager is not required unless background sync must survive process death.
+- Ktor is not required because there is no networking yet.
+- kotlinx.serialization is useful only if we store raw metadata as JSON.
+
+I recommend deferring all of those except possibly a small amount of serialization for raw metadata.
+
+### 2.6 Navigation 3
+
+Navigation 3 is acceptable as a route mechanism, but it should not become a custom navigation abstraction.
+
+If Navigation 3 proves unstable or awkward with the full player/mini-player model, falling back to Navigation Compose is a localized change, not an architectural rewrite.
+
+---
+
+## 3. Proposed initial architecture
+
+The initial system should have a single Android Gradle module with strict package boundaries.
+
+### Main components
+
+| Component | Responsibility |
+|---|---|
+| `core/model` | Pure Kotlin data classes for `Track`, `Album`, `Artist`, `QueueItem`, playback UI state. |
+| `core/queue` | Pure queue state and mutations, independent from Media3. |
+| `data/library` | MediaStore scanning, Room persistence, metadata normalization. Owns the library data. |
+| `playback` | Media3 service, MediaSession, playback controller. Owns playback state. |
+| `data/settings` | DataStore preferences. |
+| `ui` | Compose screens, ViewModels, design system, navigation. |
+
+### Dependency direction
+
+```
+ui
+ ├── playback
+ ├── data/library
+ ├── data/settings
+ └── core/model
+
+playback
+ ├── core/queue
+ └── core/model
+
+data/library
+ └── core/model
+
+data/settings
+ └── core/model
+
+core/queue
+ └── core/model
+```
+
+Rules:
+
+- `ui` may depend on `playback`, `library`, `settings`, and models.
+- `playback` does **not** depend on `ui`.
+- `data/library` does **not** depend on `playback` or `ui`.
+- `core/queue` is pure Kotlin and has no Android dependencies.
+- No feature package may import another feature’s ViewModel or screen.
+
+No separate domain/use-case layer should be introduced yet. Logic can live in repositories and `PlaybackController`. If a flow later coordinates multiple repositories, introduce a use case then.
+
+### Proposed package structure
+
+```
+com.kaon.music/
+├── KaonApp.kt
+├── MainActivity.kt
+│
+├── core/
+│   ├── model/
+│   │   ├── Track.kt
+│   │   ├── Album.kt
+│   │   ├── Artist.kt
+│   │   ├── QueueItem.kt
+│   │   └── PlaybackUiState.kt
+│   ├── queue/
+│   │   ├── QueueState.kt
+│   │   └── QueueManager.kt
+│   └── result/
+│       └── AppResult.kt
+│
+├── data/
+│   ├── library/
+│   │   ├── MediaStoreScanner.kt
+│   │   ├── LibraryRepository.kt
+│   │   ├── LibrarySyncManager.kt
+│   │   ├── db/
+│   │   │   ├── KaonDatabase.kt
+│   │   │   ├── TrackDao.kt
+│   │   │   ├── AlbumDao.kt
+│   │   │   ├── ArtistDao.kt
+│   │   │   └── Entities.kt
+│   │   └── metadata/
+│   │       └── MetadataNormalizer.kt
+│   └── settings/
+│       └── SettingsRepository.kt
+│
+├── playback/
+│   ├── PlaybackService.kt
+│   ├── PlaybackController.kt
+│   └── MediaSessionManager.kt
+│
+├── ui/
+│   ├── theme/
+│   │   ├── Theme.kt
+│   │   ├── ColorTokens.kt
+│   │   ├── TypeTokens.kt
+│   │   └── SpacingTokens.kt
+│   ├── navigation/
+│   │   └── KaonNavHost.kt
+│   ├── library/
+│   │   ├── LibraryScreen.kt
+│   │   └── LibraryViewModel.kt
+│   ├── player/
+│   │   ├── PlayerScreen.kt
+│   │   └── PlayerViewModel.kt
+│   ├── queue/
+│   │   ├── QueueScreen.kt
+│   │   └── QueueViewModel.kt
+│   └── components/
+│       ├── MiniPlayer.kt
+│       └── Artwork.kt
+│
+└── di/
+    └── AppContainer.kt
+```
+
+This is deliberately not a multi-module structure. Package boundaries are enough for now.
+
+---
+
+## 4. Architectural decisions to settle before implementation
+
+### AD-1: Initial product scope
+
+**Decision:**  
+The first slice is local-only: scan MediaStore, persist normalized basic metadata, browse tracks/albums/artists/genres, play from a queue, and provide background playback.
+
+**Reasoning:**  
+Playback and local library are the foundation. Every other major feature depends on them.
+
+**Alternatives:**  
+Include playlists, history, favorites, online metadata, recommendations, or folder browsing in the first release.
+
+**Trade-offs:**  
+A smaller first release means fewer features but a much more stable core. Later features can be added incrementally.
+
+**Recommendation:**  
+Confirm this scope before implementation.
+
+---
+
+### AD-2: Single Gradle module
+
+**Decision:**  
+Start with one `:app` module and enforce boundaries through packages.
+
+**Reasoning:**  
+A single developer, limited time, and no proven need for separate modules. Multiple Gradle modules add build complexity and slower iteration.
+
+**Alternatives:**  
+Separate `:core`, `:data`, `:playback`, and `:ui` modules now.
+
+**Trade-offs:**  
+Packages do not provide compile-time enforcement, but they are simpler and easier to refactor. Modules can be extracted later when a boundary is repeatedly violated or needs independent testing.
+
+**Recommendation:**  
+Use a single module now.
+
+---
+
+### AD-3: Playback state ownership
+
+**Decision:**  
+Media3 owns player state. Kaon owns queue order and metadata mapping. `PlaybackController` merges them into UI state.
+
+**Reasoning:**  
+Avoids two competing playback state machines. Media3 already provides playback state, MediaSession, and notification support.
+
+**Alternatives:**  
+Kaon stores its own `isPlaying`, position, duration, and current item, then writes them into Media3.
+
+**Trade-offs:**  
+The UI must go through `PlaybackController` instead of directly using Media3. That wrapper is small and worth the boundary.
+
+**Recommendation:**  
+Adopt this ownership model.
+
+---
+
+### AD-4: Queue ownership and persistence
+
+**Decision:**  
+Kaon owns a pure in-memory queue for the first version. Queue persistence is deferred.
+
+**Reasoning:**  
+Queue mutations are important, but persisting them adds schema and conflict-resolution complexity. A foreground playback service makes process death less likely during active use.
+
+**Alternatives:**  
+Persist queue state in Room now. Let Media3 own queue state completely.
+
+**Trade-offs:**  
+Queue order is lost if the process is killed and the service cannot recreate it. That is acceptable for the first slice.
+
+**Recommendation:**  
+Defer queue persistence. Revisit after playback and library are stable.
+
+---
+
+### AD-5: Library identity
+
+**Decision:**  
+Use MediaStore `_ID` as the primary identity, with content URI, file size, date modified, and raw metadata stored alongside the normalized model.
+
+**Reasoning:**  
+MediaStore `_ID` is sufficient for ordinary local playback on one device. File attributes allow change detection. Audio fingerprinting is expensive and not required yet.
+
+**Alternatives:**  
+Use file path identity, metadata fingerprint, or audio hash.
+
+**Trade-offs:**  
+Files that move or are renamed may appear as duplicates or broken URI entries. That can be addressed later if it becomes a real problem.
+
+**Recommendation:**  
+Adopt MediaStore identity for now.
+
+---
+
+### AD-6: Library synchronization
+
+**Decision:**  
+Full scan only on first run or explicit rescan. Incremental sync on later launches using `DATE_MODIFIED` since the last successful sync. Use a `ContentObserver` while the app is alive to trigger debounced sync.
+
+**Reasoning:**  
+Avoids scanning the entire library on every launch while still catching most changes. A full scan remains available as a recovery path.
+
+**Alternatives:**  
+Periodic WorkManager scans, full scan on every launch, or relying only on `ContentObserver`.
+
+**Trade-offs:**  
+This may miss changes if the app process dies and the device changes while the app is dead. The next-launch timestamp query catches those missed changes.
+
+**Recommendation:**  
+Adopt this hybrid approach. Add WorkManager later if background sync must survive process death without launching the app.
+
+---
+
+### AD-7: Dependency injection and deferred libraries
+
+**Decision:**  
+Defer Hilt and use a manual `AppContainer` with constructor injection. Defer Ktor, WorkManager, and Hilt until there is a concrete need.
+
+**Reasoning:**  
+The initial dependency graph is small. Manual wiring is understandable and avoids extra code generation. Ktor is not needed without networking. WorkManager is not needed unless background sync becomes a requirement.
+
+**Alternatives:**  
+Use Hilt immediately because it is in the preferred stack. Use Ktor/WorkManager from day one for future flexibility.
+
+**Trade-offs:**  
+Manual DI requires a little boilerplate, but it keeps the initial project simpler and faster to build.
+
+**Recommendation:**  
+Defer these dependencies unless you have a strong reason to include them immediately.
+
+---
+
+## 5. What should NOT influence the initial architecture yet
+
+These parts of the vision should stay out of the first design:
+
+- Plugin architecture and runtime extension points.
+- Dynamic UI customization beyond theme tokens.
+- Recommendation engines and personalization.
+- Online metadata, lyrics, artwork providers.
+- Streaming.
+- Advanced search with FTS or external search indexing.
+- Audio fingerprinting and cross-device identity.
+- Multi-module Gradle structure.
+- General-purpose event bus or plugin messaging.
+
+They are not rejected permanently. They are simply not allowed to shape the initial abstractions. If they are introduced now, they would create speculative boundaries and complexity.
+
+---
+
+## 6. Open decisions that need your input
+
+These are not architectural blockers for the first slice, but they should be discussed before or shortly after implementation begins:
+
+1. **Minimum SDK** — What Android versions should Kaon support?
+2. **Permission UX** — Should Kaon request audio permissions at first launch or when the user first accesses the library?
+3. **Initial library entities** — Are albums, artists, and genres enough for the first UI? Or do you want playlists/favorites from the start?
+4. **Folder browsing** — Is folder navigation part of the first release?
+5. **Queue persistence** — Is it acceptable for queue order to be lost on process death?
+6. **Artwork source** — Is MediaStore album art enough initially, or is embedded artwork required?
+7. **Target library size** — Should we define a rough target such as 5,000, 10,000, or 20,000 tracks for early performance decisions?
+8. **Testing priority** — Should the first testing investment be pure queue logic, metadata normalization, or playback state mapping?
+9. **Android Auto** — Is Android Auto required in the first release, or can it be added later through the existing MediaSession?
+10. **Privacy/backup behavior** — Should library metadata be included in Android auto backup, or should Kaon opt out?
+
+---
+
+## 7. Recommended next step
+
+Before implementation, I would settle:
+
+- AD-1: initial product scope.
+- AD-3: playback state ownership.
+- AD-5: library identity.
+
+Once those are confirmed, the next concrete task is not generating UI code. It is defining the Room schema and the `PlaybackController` state contract.
+
+I would not begin building screens until those boundaries are clear.

@@ -1,0 +1,99 @@
+Hello. I am ready to act as your architectural and structural engineering partner for Kaon Music.
+
+This is a fantastic vision. It is ambitious but grounded, prioritizing user experience, performance, and long-term maintainability over chasing trends. As a single developer, achieving this requires ruthless prioritization and strict adherence to clear boundaries.
+
+As requested, I will not write any implementation code today. Instead, I will analyze your requirements, separate the immediate needs from the long-term vision, expose the major architectural risks, and propose our first foundational decisions.
+
+---
+
+### 1. Analysis: Vision vs. Constraints & Risks
+
+Your vision introduces a natural tension: you want a deeply customizable, extensible system (plugins, personalization, external metadata), but you are constrained by time (single developer) and a requirement for a lightweight, fast, and simple architecture.
+
+Here are the immediate architectural risks and contradictions we must address:
+
+* **Risk 1: The Queue Source of Truth (Media3 vs. Kaon).**
+AndroidX Media3 is designed to hold the queue and playback state. However, your vision requires persistent queues, custom shuffle logic, and queue manipulation decoupled from UI lifecycles. If we let Kaon’s Database and Media3 compete as the "source of truth," we will face endless race conditions (e.g., UI updates the DB, DB tells Media3, Media3 fires a state change, UI updates again).
+* **Risk 2: Metadata Identity & MediaStore Volatility.**
+You want metadata to be a first-class citizen. Relying solely on Android's `MediaStore` IDs is dangerous; they can change if the OS rescans or if files are moved. We need a reliable way to uniquely identify a track so that play history, playlists, and favorites do not break when a user renames a folder.
+* **Risk 3: The "Plugin/Customization" Trap.**
+Building a generalized "plugin architecture" or "dynamic UI system" from day one is a massive time sink and often results in "premature abstraction." We must build a solid, static application first, utilizing standard dependency injection (Hilt) and clear interfaces to *allow* future dynamic loading without engineering it today.
+* **Risk 4: UI Responsiveness vs. Library Syncing.**
+Scanning a local file system, extracting metadata, and writing to a database can easily choke a device. We must strictly isolate this background work so the UI never stutters, even during an initial scan of 50,000 tracks.
+
+---
+
+### 2. What We Will NOT Build Yet (Deferred Vision)
+
+To protect the architecture, the following concepts from your vision will explicitly **not** influence our initial foundational design:
+
+* **Runtime Plugins / Extension Mechanisms:** We will use standard interfaces and Dependency Injection (Hilt). If an implementation needs to change later, we swap the interface implementation.
+* **Recommendation & Personalization Engines:** We will design the database to record simple listening history (timestamps, track IDs), but we will not build analytical or recommendation infrastructure yet.
+* **Streaming & Online Services (Ktor):** We will build local-first. We will leave a boundary (e.g., an `ArtworkDataSource` interface) that could later be backed by a network request, but the initial implementation will strictly read local media.
+* **Advanced Search Engines:** We will rely on standard SQLite/Room querying (`LIKE %query%`) until performance profiling proves we need Full-Text Search (FTS).
+
+---
+
+### 3. Proposed Minimal Architectural Foundation
+
+We will follow a pragmatic, layered architecture with a strict **Unidirectional Data Flow (UDF)**.
+
+**Dependency Rule:** `UI` -> `Domain` <- `Data / Playback`
+*The Domain has no dependencies on UI, Data, or Android frameworks.*
+
+1. **Domain (The Core):** Pure Kotlin. Contains our normalized models (`Track`, `Album`, `QueueState`) and the interfaces for our Repositories and Playback controllers.
+2. **Data (The Source of Truth):** Implements Domain interfaces. Owns Room (Database), MediaStore querying, and DataStore (Preferences).
+3. **Playback (The Engine):** Implements Domain interfaces. Owns Media3 `ExoPlayer` and `MediaSessionService`. Translates Media3 state into Kaon Domain state.
+4. **Presentation/UI:** Jetpack Compose and ViewModels. Observes state from the Domain/Data layers via `StateFlow` and sends intents (actions) down.
+
+---
+
+### 4. Proposed Initial Module Structure
+
+While a single Gradle module is simplest, it makes it too easy to accidentally leak Android Media3 imports into the UI, or Room entities into the Playback layer.
+
+I propose a strictly bounded multi-module setup. This prevents spaghetti code by relying on the compiler to enforce architectural rules.
+
+* `:app` *(Wires everything together via Hilt, sets up Navigation)*
+* `:core:domain` *(Pure Kotlin. Models: `Track`, `Album`. Interfaces: `MusicRepository`, `PlaybackController`)*
+* `:core:data` *(Room DB, DAOs, MediaStore Sync Worker. Depends on `:core:domain`)*
+* `:core:playback` *(Media3, ExoPlayer, MediaSession. Depends on `:core:domain`)*
+* `:core:designsystem` *(Compose theme, tokens, reusable generic UI components. No domain logic)*
+* `:feature:library` *(Screens for Artists, Albums, Tracks. Depends on domain and designsystem)*
+* `:feature:player` *(Now Playing screen and Mini-player)*
+
+*Why this structure?* It ensures the UI never talks directly to Room or Media3. If we decide to swap out how we sync MediaStore, `:feature:library` doesn't even need to recompile.
+
+---
+
+### 5. First Architectural Decisions to Settle
+
+Before we write code, we need to align on these core decisions. Please review these and let me know your thoughts, or challenge them if they don't align with your priorities.
+
+#### Decision 1: Domain Layer / Use-Case Policy
+
+* **Reasoning:** "Clean Architecture" often mandates Use Cases (Interactors) for every single action (e.g., `GetTracksUseCase`). In a heavily data-driven app like a music player, this often results in hundreds of files that just pass a Flow from the Repository to the ViewModel, adding zero value.
+* **Alternatives:** 1. Strict Use Cases for everything. 2. Repositories injected directly into ViewModels; Use Cases only for complex business logic (e.g., `SyncLibraryUseCase`).
+* **Recommendation:** **Pragmatic Use Cases.** ViewModels should observe Repositories directly for basic data reading. We will only create Use Cases for cross-repository orchestration (like parsing a file, matching it to the DB, and downloading artwork).
+
+#### Decision 2: Playback State Source of Truth
+
+* **Reasoning:** We need to know what is playing and the current queue.
+* **Alternatives:** 1. Kaon's Room DB drives everything; Media3 is a dumb pipe. 2. Media3 holds the queue in memory; Kaon reads from Media3 and persists it to Room in the background.
+* **Trade-offs:** If Room drives everything, cross-fade and gapless playback in Media3 become incredibly difficult because Media3 needs the next track queued in its own engine ahead of time.
+* **Recommendation:** **Media3 is the runtime source of truth for the *active* queue and playback state.** The `:core:playback` layer will expose a `StateFlow<PlaybackState>`. A background observer will persist this state to Room/DataStore asynchronously so it survives process death, but the UI will always read the live state from the Playback wrapper.
+
+#### Decision 3: Metadata Identity Strategy (Initial)
+
+* **Reasoning:** How do we uniquely identify a track?
+* **Alternatives:** 1. MediaStore `_ID`. 2. Absolute File Path. 3. A generated hash of (Artist + Album + Title + Duration).
+* **Trade-offs:** MediaStore IDs can change. File paths break on folder moves. Audio hashing is slow.
+* **Recommendation:** **Composite Primary Key.** In our Room DB, generate a unique Kaon ID (UUID). Map it using a combination of `MediaStore ID` (for fast initial sync) and `Absolute File Path` as fallbacks. For V1, we will track files primarily by MediaStore ID but store the path and raw metadata to prepare for a more robust matching algorithm in the future.
+
+---
+
+### How would you like to proceed?
+
+Do you agree with the **UDF dependency direction**, the **module structure**, and the **three initial decisions** above?
+
+If you have concerns about the module structure being overkill, or if you want to challenge the Queue source of truth, let's debate that now. Once we lock down these boundaries, we can begin designing the `core:domain` data models.
