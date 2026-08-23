@@ -61,21 +61,31 @@ class QueueSnapshotManager(
         )
     }
 
+    suspend fun clearSnapshot() {
+        queueSnapshotDao.clearQueueSnapshot()
+        pendingSnapshot = null
+        debounceJob?.cancel()
+    }
+
+    suspend fun saveSnapshotDirectly(snapshot: QueueSnapshot) {
+        val serialized = snapshot.trackIds.joinToString(",")
+        val entity = QueueSnapshotEntity(
+            id = 1,
+            serializedTrackIds = serialized,
+            currentIndex = snapshot.currentIndex,
+            currentPositionMs = snapshot.currentPositionMs,
+            isShuffleEnabled = snapshot.isShuffleEnabled,
+            repeatMode = snapshot.repeatMode,
+            savedAt = snapshot.timestamp
+        )
+        queueSnapshotDao.saveQueueSnapshot(entity)
+        Timber.tag("QueueSnapshot").d("Queue snapshot persisted (${snapshot.trackIds.size} tracks)")
+    }
+
     private fun persistSnapshotNow(snapshot: QueueSnapshot) {
         serviceScope.launch(Dispatchers.IO) {
             try {
-                val serialized = snapshot.trackIds.joinToString(",")
-                val entity = QueueSnapshotEntity(
-                    id = 1,
-                    serializedTrackIds = serialized,
-                    currentIndex = snapshot.currentIndex,
-                    currentPositionMs = snapshot.currentPositionMs,
-                    isShuffleEnabled = snapshot.isShuffleEnabled,
-                    repeatMode = snapshot.repeatMode,
-                    savedAt = snapshot.timestamp
-                )
-                queueSnapshotDao.saveQueueSnapshot(entity)
-                Timber.tag("QueueSnapshot").d("Queue snapshot persisted (${snapshot.trackIds.size} tracks)")
+                saveSnapshotDirectly(snapshot)
             } catch (e: Exception) {
                 Timber.tag("QueueSnapshot").e(e, "Failed to persist queue snapshot")
             }

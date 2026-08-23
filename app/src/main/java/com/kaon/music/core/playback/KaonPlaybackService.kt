@@ -63,7 +63,7 @@ class KaonPlaybackService : MediaSessionService() {
         database = KaonDatabase.getInstance(applicationContext)
         val scanner = MediaStoreScanner(applicationContext)
         val syncEngine = SyncEngine(scanner, database.trackDao())
-        trackRepository = TrackRepository(database.trackDao(), database.favoriteDao(), syncEngine)
+        trackRepository = TrackRepository(database.trackDao(), database.favoriteDao(), syncEngine, database.playEventDao())
         historyRepository = HistoryRepository(database.playEventDao())
         snapshotManager = QueueSnapshotManager(database.queueSnapshotDao(), serviceScope)
 
@@ -78,11 +78,15 @@ class KaonPlaybackService : MediaSessionService() {
             .setHandleAudioBecomingNoisy(true) // Media3 handles becoming noisy (pause on unplug)
             .build()
 
-        // 2. Setup Activity pending intent for notification clicks
+        // 2. Setup Activity pending intent for notification clicks (opens full player)
+        val intent = Intent(this, MainActivity::class.java).apply {
+            putExtra(EXTRA_EXPAND_PLAYER, true)
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
         val sessionActivityPendingIntent = PendingIntent.getActivity(
             this,
             0,
-            Intent(this, MainActivity::class.java),
+            intent,
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 
@@ -92,16 +96,20 @@ class KaonPlaybackService : MediaSessionService() {
             .setCallback(MediaSessionCallback())
             .build()
 
-        // 4. Attach Player listeners for queue snapshotting and listening history tracking
+        // 4. Attach Player listeners for queue snapshotting, unplayable-item policy, and listening history
         setupPlayerListener()
 
         // 5. Attempt cold-start queue restoration
         restoreQueueSnapshotIfIdle()
     }
 
+    private var consecutiveErrorCount = 0
+
     private fun setupPlayerListener() {
         player.addListener(object : Player.Listener {
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                // Reset consecutive error counter on successful transition
+                consecutiveErrorCount = 0
                 checkAndRecordPlayEvent(isTransition = true)
 
                 currentTrackId = mediaItem?.mediaId?.toLongOrNull()
@@ -109,6 +117,34 @@ class KaonPlaybackService : MediaSessionService() {
                 hasRecordedCurrentTrackPlayEvent = false
 
                 scheduleQueueSnapshot()
+            }
+
+            override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+                consecutiveErrorCount++
+                val failedTitle = player.currentMediaItem?.mediaMetadata?.title?.toString() ?: "Unknown Track"
+                Timber.tag("PlaybackService").w(error, "Playback error on track '$failedTitle' (consecutive error count: $consecutiveErrorCount)")
+
+                // Notify connected controllers (PlaybackFacade) of unplayable track event
+                val args = Bundle().apply {
+                    putString("track_title", failedTitle)
+                    putInt("error_count", consecutiveErrorCount)
+                }
+                mediaSession?.broadcastCustomCommand(
+                    SessionCommand(ACTION_TRACK_UNPLAYABLE, Bundle.EMPTY),
+                    args
+                )
+
+                // Unplayable-item policy (M2-D3):
+                // Auto-advance to next playable item if below max consecutive errors (3)
+                if (consecutiveErrorCount < MAX_CONSECUTIVE_ERRORS && player.hasNextMediaItem()) {
+                    player.seekToNextMediaItem()
+                    player.prepare()
+                    player.play()
+                } else {
+                    Timber.tag("PlaybackService").e("Stopping playback: Max consecutive error threshold ($MAX_CONSECUTIVE_ERRORS) reached.")
+                    consecutiveErrorCount = 0
+                    player.stop()
+                }
             }
 
             override fun onIsPlayingChanged(isPlaying: Boolean) {
@@ -169,7 +205,13 @@ class KaonPlaybackService : MediaSessionService() {
             if (player.mediaItemCount > 0) return@launch // Double-check race condition
 
             val tracks = trackRepository.getTracksByIds(snapshot.trackIds)
-            if (tracks.isEmpty() || player.mediaItemCount > 0) return@launch
+            if (tracks.isEmpty()) {
+                // If restore finds only orphans/missing tracks: clean empty state, snapshot cleared (§4 #11)
+                Timber.tag("PlaybackService").w("Restoration snapshot contained only missing tracks. Clearing snapshot.")
+                snapshotManager.clearSnapshot()
+                return@launch
+            }
+            if (player.mediaItemCount > 0) return@launch
 
             val mediaItems = tracks.map { track ->
                 MediaItem.Builder()
@@ -190,9 +232,9 @@ class KaonPlaybackService : MediaSessionService() {
             player.repeatMode = snapshot.repeatMode
             player.shuffleModeEnabled = snapshot.isShuffleEnabled
             player.prepare()
-            player.playWhenReady = false // Restored queue starts paused
+            player.playWhenReady = false // Restored queue starts paused (M2-D2)
 
-            Timber.tag("PlaybackService").i("Restored ${mediaItems.size} tracks from queue snapshot at index $targetIndex")
+            Timber.tag("PlaybackService").i("Restored ${mediaItems.size} tracks from queue snapshot at index $targetIndex (paused)")
         }
     }
 
@@ -209,20 +251,28 @@ class KaonPlaybackService : MediaSessionService() {
         if (currentPos >= thresholdMs) {
             hasRecordedCurrentTrackPlayEvent = true
             serviceScope.launch(Dispatchers.IO) {
-                historyRepository.recordPlayEvent(
-                    trackId = trackId,
-                    eventType = PlayEvent.EventType.PLAY,
-                    playedMs = currentPos
-                )
+                try {
+                    historyRepository.recordPlayEvent(
+                        trackId = trackId,
+                        eventType = PlayEvent.EventType.PLAY,
+                        playedMs = currentPos
+                    )
+                } catch (e: Exception) {
+                    Timber.tag("PlaybackService").w(e, "Non-fatal: Failed to record PLAY event for track $trackId")
+                }
             }
         } else if (isTransition && currentPos < thresholdMs && currentPos > 2000L) {
             // Skip event
             serviceScope.launch(Dispatchers.IO) {
-                historyRepository.recordPlayEvent(
-                    trackId = trackId,
-                    eventType = PlayEvent.EventType.SKIP,
-                    playedMs = currentPos
-                )
+                try {
+                    historyRepository.recordPlayEvent(
+                        trackId = trackId,
+                        eventType = PlayEvent.EventType.SKIP,
+                        playedMs = currentPos
+                    )
+                } catch (e: Exception) {
+                    Timber.tag("PlaybackService").w(e, "Non-fatal: Failed to record SKIP event for track $trackId")
+                }
             }
         }
     }
@@ -254,5 +304,11 @@ class KaonPlaybackService : MediaSessionService() {
         ): ListenableFuture<SessionResult> {
             return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
         }
+    }
+
+    companion object {
+        const val ACTION_TRACK_UNPLAYABLE = "com.kaon.music.ACTION_TRACK_UNPLAYABLE"
+        const val EXTRA_EXPAND_PLAYER = "extra_expand_player"
+        private const val MAX_CONSECUTIVE_ERRORS = 3
     }
 }

@@ -2,11 +2,15 @@ package com.kaon.music.core.playback
 
 import android.content.ComponentName
 import android.content.Context
+import android.os.Bundle
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
 import androidx.media3.session.MediaController
+import androidx.media3.session.SessionCommand
+import androidx.media3.session.SessionResult
 import androidx.media3.session.SessionToken
+import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
 import com.google.common.util.concurrent.MoreExecutors
 import com.kaon.music.core.data.model.Track
@@ -18,20 +22,28 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import timber.log.Timber
 
+sealed interface PlaybackEvent {
+    data class TrackUnplayable(val trackTitle: String) : PlaybackEvent
+}
+
 /**
  * Process-scoped Playback Facade.
  *
- * Implements ARCHITECTURE_ATTRIBUTED.md §3 & §12:
+ * Implements ARCHITECTURE_ATTRIBUTED.md §3 & §12 and Milestone 2:
  * - Single point of entry for UI interactions with Media3 playback.
- * - Exposes immutable StateFlow<PlaybackState> and intent methods.
+ * - Exposes immutable StateFlow<PlaybackState> and one-shot error events.
+ * - Enforces identical-queue detection (seek instead of reset).
  * - Enforces granular queue timeline mutations (addMediaItem, moveMediaItem, removeMediaItem).
  * - "Kaon observes Media3; Kaon never mirrors Media3".
  */
@@ -44,13 +56,20 @@ class PlaybackFacade(
     private val _playbackState = MutableStateFlow(PlaybackState())
     val playbackState: StateFlow<PlaybackState> = _playbackState.asStateFlow()
 
+    private val _oneShotEvents = MutableSharedFlow<PlaybackEvent>(extraBufferCapacity = 1)
+    val oneShotEvents: SharedFlow<PlaybackEvent> = _oneShotEvents.asSharedFlow()
+
     private var controllerFuture: ListenableFuture<MediaController>? = null
     private var mediaController: MediaController? = null
 
     private var positionPollJob: Job? = null
 
     init {
-        connectToService()
+        try {
+            connectToService()
+        } catch (e: Throwable) {
+            Timber.tag("PlaybackFacade").w(e, "Could not connect to playback service (expected in unit tests)")
+        }
     }
 
     private fun connectToService() {
@@ -59,7 +78,22 @@ class PlaybackFacade(
             ComponentName(context, KaonPlaybackService::class.java)
         )
 
-        controllerFuture = MediaController.Builder(context, sessionToken).buildAsync()
+        controllerFuture = MediaController.Builder(context, sessionToken)
+            .setListener(object : MediaController.Listener {
+                override fun onCustomCommand(
+                    controller: MediaController,
+                    command: SessionCommand,
+                    args: Bundle
+                ): ListenableFuture<SessionResult> {
+                    if (command.customAction == KaonPlaybackService.ACTION_TRACK_UNPLAYABLE) {
+                        val title = args.getString("track_title") ?: "Unknown Track"
+                        _oneShotEvents.tryEmit(PlaybackEvent.TrackUnplayable(title))
+                    }
+                    return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
+                }
+            })
+            .buildAsync()
+
         controllerFuture?.addListener({
             try {
                 val controller = controllerFuture?.get()
@@ -188,7 +222,8 @@ class PlaybackFacade(
                 mediaController?.let { player ->
                     updatePosition(player)
                 }
-                delay(200) // ~5 updates per second for smooth scrubber updates without jank
+                // Battery rule (M2 Stage 4): position ticks ~500ms while playing, none while paused
+                delay(500)
             }
         }
     }
@@ -240,14 +275,35 @@ class PlaybackFacade(
         _playbackState.update { it.copy(playbackPositionMs = positionMs) }
     }
 
+    /**
+     * Tapping a track sets the queue starting at the tapped track.
+     * Identical-Queue Detection (M2 Stage 2 / Acceptance Criteria):
+     * If the tapped context matches the current queue, seek instead of rebuilding/resetting.
+     */
     fun playTrack(track: Track, queue: List<Track>) {
         val controller = mediaController ?: return
-        val mediaItems = queue.map { it.toMediaItem() }
-        val startIndex = queue.indexOfFirst { it.id == track.id }.coerceAtLeast(0)
+        if (queue.isEmpty()) return
 
-        controller.setMediaItems(mediaItems, startIndex, 0L)
-        controller.prepare()
-        controller.play()
+        val currentQueue = _playbackState.value.queue
+        val isIdenticalQueue = currentQueue.isNotEmpty() &&
+                currentQueue.size == queue.size &&
+                currentQueue.indices.all { i -> currentQueue[i].id == queue[i].id }
+
+        val targetIndex = queue.indexOfFirst { it.id == track.id }.coerceAtLeast(0)
+
+        if (isIdenticalQueue) {
+            if (controller.currentMediaItemIndex != targetIndex) {
+                controller.seekToDefaultPosition(targetIndex)
+            }
+            if (!controller.isPlaying) {
+                controller.play()
+            }
+        } else {
+            val mediaItems = queue.map { it.toMediaItem() }
+            controller.setMediaItems(mediaItems, targetIndex, 0L)
+            controller.prepare()
+            controller.play()
+        }
     }
 
     fun playQueue(queue: List<Track>, startIndex: Int = 0) {
@@ -266,7 +322,8 @@ class PlaybackFacade(
      * Granular queue mutation: Add to end of queue without restarting playback.
      */
     fun enqueue(track: Track) {
-        mediaController?.addMediaItem(track.toMediaItem())
+        val controller = mediaController ?: return
+        controller.addMediaItem(track.toMediaItem())
     }
 
     /**
@@ -282,14 +339,40 @@ class PlaybackFacade(
      * Granular queue mutation: Move item in timeline.
      */
     fun moveQueueItem(fromIndex: Int, toIndex: Int) {
-        mediaController?.moveMediaItem(fromIndex, toIndex)
+        val controller = mediaController ?: return
+        if (fromIndex in 0 until controller.mediaItemCount && toIndex in 0 until controller.mediaItemCount) {
+            controller.moveMediaItem(fromIndex, toIndex)
+        }
     }
 
     /**
      * Granular queue mutation: Remove item from timeline.
+     * Removing current item advances seamlessly (M2 Failure matrix #13).
      */
     fun removeQueueItem(index: Int) {
-        mediaController?.removeMediaItem(index)
+        val controller = mediaController ?: return
+        if (index in 0 until controller.mediaItemCount) {
+            controller.removeMediaItem(index)
+        }
+    }
+
+    /**
+     * Clears all queue items and stops playback (M2 Failure matrix #12).
+     */
+    fun clearQueue() {
+        val controller = mediaController ?: return
+        controller.stop()
+        controller.clearMediaItems()
+        _playbackState.update {
+            it.copy(
+                currentTrack = null,
+                queue = emptyList(),
+                currentIndex = -1,
+                isPlaying = false,
+                playbackPositionMs = 0L,
+                durationMs = 0L
+            )
+        }
     }
 
     fun toggleShuffle() {

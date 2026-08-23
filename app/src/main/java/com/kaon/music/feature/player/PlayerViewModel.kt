@@ -27,12 +27,20 @@ class PlayerViewModel(
     private val _isFullPlayerExpanded = MutableStateFlow(false)
     val isFullPlayerExpanded: StateFlow<Boolean> = _isFullPlayerExpanded.asStateFlow()
 
+    private val _isQueueSheetVisible = MutableStateFlow(false)
+    val isQueueSheetVisible: StateFlow<Boolean> = _isQueueSheetVisible.asStateFlow()
+
     fun expandFullPlayer() {
         _isFullPlayerExpanded.value = true
     }
 
     fun collapseFullPlayer() {
         _isFullPlayerExpanded.value = false
+        _isQueueSheetVisible.value = false
+    }
+
+    fun toggleQueueSheet() {
+        _isQueueSheetVisible.value = !_isQueueSheetVisible.value
     }
 
     fun togglePlayPause() {
@@ -57,6 +65,19 @@ class PlayerViewModel(
 
     fun cycleRepeatMode() {
         playbackFacade.cycleRepeatMode()
+    }
+
+    fun removeQueueItem(index: Int) {
+        playbackFacade.removeQueueItem(index)
+    }
+
+    fun moveQueueItem(fromIndex: Int, toIndex: Int) {
+        playbackFacade.moveQueueItem(fromIndex, toIndex)
+    }
+
+    fun clearQueue() {
+        playbackFacade.clearQueue()
+        collapseFullPlayer()
     }
 
     fun toggleFavorite(trackId: Long) {
