@@ -13,28 +13,74 @@ interface PlayEventDao {
     suspend fun insertEvent(event: PlayEventEntity): Long
 
     /**
-     * Recently played tracks query derived from raw play events.
+     * De-duplicated recently played tracks query joining active tracks (M4-D2, M4-D3).
+     * Returns active tracks ordered by their most recent PLAY event timestamp.
      */
     @Query("""
-        SELECT track_id FROM play_events 
-        WHERE event_type = 'PLAY' 
-        ORDER BY played_at DESC 
+        SELECT t.* FROM tracks t
+        INNER JOIN (
+            SELECT track_id, MAX(played_at) as latest_play
+            FROM play_events
+            WHERE event_type = 'PLAY'
+            GROUP BY track_id
+        ) p ON t.track_id = p.track_id
+        WHERE t.is_missing = 0
+        ORDER BY p.latest_play DESC
         LIMIT :limit
     """)
-    fun observeRecentlyPlayedTrackIds(limit: Int = 50): Flow<List<Long>>
+    fun observeRecentlyPlayedTrackEntities(limit: Int = 100): Flow<List<com.kaon.music.core.data.db.entity.TrackEntity>>
 
     /**
-     * Most played track query derived from raw play events.
+     * Synchronous query for recently played active track entities.
      */
     @Query("""
-        SELECT track_id, COUNT(*) as play_count 
-        FROM play_events 
-        WHERE event_type = 'PLAY' 
-        GROUP BY track_id 
-        ORDER BY play_count DESC 
+        SELECT t.* FROM tracks t
+        INNER JOIN (
+            SELECT track_id, MAX(played_at) as latest_play
+            FROM play_events
+            WHERE event_type = 'PLAY'
+            GROUP BY track_id
+        ) p ON t.track_id = p.track_id
+        WHERE t.is_missing = 0
+        ORDER BY p.latest_play DESC
         LIMIT :limit
     """)
-    suspend fun getMostPlayedTrackIds(limit: Int = 50): List<TrackPlayCount>
+    suspend fun getRecentlyPlayedTrackEntities(limit: Int = 100): List<com.kaon.music.core.data.db.entity.TrackEntity>
+
+    /**
+     * Most played active tracks query (M4-D2, M4-D4).
+     * Returns active tracks ordered by total PLAY event count.
+     */
+    @Query("""
+        SELECT t.* FROM tracks t
+        INNER JOIN (
+            SELECT track_id, COUNT(*) as play_count
+            FROM play_events
+            WHERE event_type = 'PLAY'
+            GROUP BY track_id
+        ) p ON t.track_id = p.track_id
+        WHERE t.is_missing = 0
+        ORDER BY p.play_count DESC
+        LIMIT :limit
+    """)
+    fun observeMostPlayedTrackEntities(limit: Int = 100): Flow<List<com.kaon.music.core.data.db.entity.TrackEntity>>
+
+    /**
+     * Synchronous query for most played active track entities.
+     */
+    @Query("""
+        SELECT t.* FROM tracks t
+        INNER JOIN (
+            SELECT track_id, COUNT(*) as play_count
+            FROM play_events
+            WHERE event_type = 'PLAY'
+            GROUP BY track_id
+        ) p ON t.track_id = p.track_id
+        WHERE t.is_missing = 0
+        ORDER BY p.play_count DESC
+        LIMIT :limit
+    """)
+    suspend fun getMostPlayedTrackEntities(limit: Int = 100): List<com.kaon.music.core.data.db.entity.TrackEntity>
 
     data class TrackPlayCount(
         val track_id: Long,

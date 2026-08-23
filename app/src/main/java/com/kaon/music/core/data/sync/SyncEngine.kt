@@ -5,11 +5,10 @@ import com.kaon.music.core.data.db.entity.TrackEntity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import timber.log.Timber
-import java.util.Locale
 import kotlin.math.abs
 
 /**
- * Result metrics from a library synchronization execution.
+ * Result metrics for a completed synchronization pass.
  */
 data class SyncResult(
     val totalDiscovered: Int,
@@ -20,29 +19,36 @@ data class SyncResult(
     val purgedOrphans: Int
 )
 
+/**
+ * Reconciliation Sync Engine.
+ *
+ * Implements ARCHITECTURE_ATTRIBUTED.md §2, §5, §18 and Milestone 3 (M3-D4):
+ * - Match-by-ID + orphan-marking.
+ * - 2-tier deterministic re-linking hierarchy (Tier 1: Path/Title/Artist/Duration -> Tier 2: Title/Artist/Album/Duration/Size).
+ * - Ambiguity handling (multiple candidate matches abort re-link).
+ * - Orphan retention purge (~30-day window).
+ * - Sync-safety guard (verifies storage permission before modifying database).
+ */
 class SyncEngine(
     private val scanner: MediaStoreScanner,
     private val trackDao: TrackDao
 ) {
 
-    /**
-     * Executes a full query-based reconcile between Android MediaStore and Room.
-     *
-     * Idempotent by construction (§5 ARCHITECTURE_ATTRIBUTED.md):
-     * - Reads fresh MediaStore cursor.
-     * - Diffs in-memory against Room.
-     * - Applies delta (inserts, updates, re-links, and missing flags) in Room.
-     *
-     * Hardened Re-linking Hierarchy:
-     * - Evaluates candidates against a strict multi-tier hierarchy.
-     * - Ambiguous matches with multiple candidates are never silently merged; they insert as new tracks.
-     */
     suspend fun synchronize(orphanRetentionDays: Long = 30): SyncResult = withContext(Dispatchers.IO) {
+        // Sync-safety guard (Milestone 2 Failure-Mode Matrix #4):
+        // An empty scan is only meaningful when permission is granted.
+        // Never reconcile or mark tracks missing if permission is revoked.
+        if (!scanner.hasStoragePermission()) {
+            Timber.tag("SyncEngine").w("Sync aborted: Storage permission not granted. Database state untouched.")
+            return@withContext SyncResult(0, 0, 0, 0, 0, 0)
+        }
+
         val scanItems = scanner.scanAudioFiles()
         val storedTracks = trackDao.getAllStoredTracks()
 
         val storedByMediaStoreId = storedTracks.associateBy { it.mediaStoreId }.toMutableMap()
-        val missingCandidates = storedTracks.filter { it.isMissing }.toMutableList()
+        val scannedMediaStoreIds = scanItems.map { it.mediaStoreId }.toSet()
+        val reLinkCandidates = storedTracks.filter { it.isMissing || !scannedMediaStoreIds.contains(it.mediaStoreId) }.toMutableList()
 
         val toInsert = mutableListOf<TrackEntity>()
         val toUpdate = mutableListOf<TrackEntity>()
@@ -54,16 +60,29 @@ class SyncEngine(
             if (existing != null) {
                 // Exact MediaStore ID match
                 matchedStoredTrackIds.add(existing.trackId)
-                if (existing.dateModified != item.dateModified || existing.isMissing) {
+                val needsBackfill = existing.dateAdded == 0L && item.dateAdded > 0L
+                if (existing.dateModified != item.dateModified || existing.isMissing || needsBackfill) {
+                    val resolvedDateAdded = if (existing.dateAdded == 0L && item.dateAdded > 0L) {
+                        Timber.tag("SyncEngine").d("Backfilling date_added for track '${existing.title}' (trackId=${existing.trackId}) to ${item.dateAdded}")
+                        item.dateAdded
+                    } else {
+                        existing.dateAdded
+                    }
+
                     toUpdate.add(
                         existing.copy(
                             title = item.title,
                             artist = item.artist,
+                            artistId = item.artistId,
                             album = item.album,
                             albumId = item.albumId,
+                            trackNumber = item.trackNumber,
+                            discNumber = item.discNumber,
+                            year = item.year,
                             durationMs = item.durationMs,
                             sizeBytes = item.sizeBytes,
                             dateModified = item.dateModified,
+                            dateAdded = resolvedDateAdded,
                             relativePath = item.relativePath,
                             titleNormalized = normalize(item.title),
                             artistNormalized = normalize(item.artist),
@@ -75,13 +94,16 @@ class SyncEngine(
                 }
             } else {
                 // MediaStore ID not recognized: Evaluate deterministic re-linking hierarchy
-                val verifiedMatch = findDeterministicReLinkMatch(item, missingCandidates)
+                val verifiedMatch = findDeterministicReLinkMatch(item, reLinkCandidates)
 
                 if (verifiedMatch != null) {
                     // Unambiguous single match: Re-link stored Kaon trackId to new MediaStoreId
                     trackDao.reLinkTrack(verifiedMatch.trackId, item.mediaStoreId)
+                    if (verifiedMatch.dateAdded == 0L && item.dateAdded > 0L) {
+                        trackDao.updateTrack(verifiedMatch.copy(dateAdded = item.dateAdded, mediaStoreId = item.mediaStoreId, isMissing = false))
+                    }
                     matchedStoredTrackIds.add(verifiedMatch.trackId)
-                    missingCandidates.remove(verifiedMatch)
+                    reLinkCandidates.remove(verifiedMatch)
                     reLinkedCount++
                     Timber.tag("SyncEngine").d(
                         "Re-linked track '${item.title}' (trackId=${verifiedMatch.trackId}) from old mediaStoreId=${verifiedMatch.mediaStoreId} to new mediaStoreId=${item.mediaStoreId}"
@@ -93,11 +115,16 @@ class SyncEngine(
                             mediaStoreId = item.mediaStoreId,
                             title = item.title,
                             artist = item.artist,
+                            artistId = item.artistId,
                             album = item.album,
                             albumId = item.albumId,
+                            trackNumber = item.trackNumber,
+                            discNumber = item.discNumber,
+                            year = item.year,
                             durationMs = item.durationMs,
                             sizeBytes = item.sizeBytes,
                             dateModified = item.dateModified,
+                            dateAdded = item.dateAdded,
                             relativePath = item.relativePath,
                             titleNormalized = normalize(item.title),
                             artistNormalized = normalize(item.artist),
@@ -146,66 +173,54 @@ class SyncEngine(
     }
 
     /**
-     * Deterministic Re-Linking Matching Hierarchy:
+     * Deterministic Re-Linking Matching Hierarchy (Locked 2-Tier Model):
      *
      * Tier 1: Exact Path + Normalized Title + Normalized Artist + Duration (±1000ms)
+     *         (Handles MediaStore ID churn where file location is unchanged)
      * Tier 2: Normalized Title + Normalized Artist + Normalized Album + Duration (±1000ms) + Exact Size
-     * Tier 3: Normalized Title + Duration (±1000ms) + Exact Size
+     *         (Handles moved or renamed files)
      *
      * Ambiguity Rule:
-     * If multiple candidates match at the highest qualifying tier, return null (do not guess).
+     * If more than one missing candidate satisfies the tier criteria, the match is deemed ambiguous.
+     * Re-linking is ABORTED and null is returned, forcing a clean new insert to prevent cross-contamination.
      */
-    private fun findDeterministicReLinkMatch(
+    fun findDeterministicReLinkMatch(
         item: MediaStoreAudioItem,
         candidates: List<TrackEntity>
     ): TrackEntity? {
         if (candidates.isEmpty()) return null
 
-        val titleNorm = normalize(item.title)
-        val artistNorm = normalize(item.artist)
-        val albumNorm = normalize(item.album)
-        val pathNorm = normalize(item.relativePath)
-        val durationToleranceMs = 1000L
+        val normTitle = normalize(item.title)
+        val normArtist = normalize(item.artist)
+        val normAlbum = normalize(item.album)
 
-        // Filter basic physical envelope (duration)
-        val envelopeCandidates = candidates.filter {
-            abs(it.durationMs - item.durationMs) <= durationToleranceMs
+        // Tier 1: Relative Path + Title + Artist + Duration (±1000ms)
+        val tier1Matches = candidates.filter {
+            it.relativePath == item.relativePath &&
+                    it.titleNormalized == normTitle &&
+                    it.artistNormalized == normArtist &&
+                    abs(it.durationMs - item.durationMs) <= DURATION_TOLERANCE_MS
         }
-        if (envelopeCandidates.isEmpty()) return null
+        if (tier1Matches.size == 1) return tier1Matches.first()
+        if (tier1Matches.size > 1) return null // Ambiguity abort
 
-        // Tier 1: Path + Title + Artist
-        if (pathNorm.isNotBlank()) {
-            val tier1Matches = envelopeCandidates.filter {
-                normalize(it.relativePath) == pathNorm &&
-                        it.titleNormalized == titleNorm &&
-                        it.artistNormalized == artistNorm
-            }
-            if (tier1Matches.size == 1) return tier1Matches.first()
-            if (tier1Matches.size > 1) return null // Ambiguity: do not guess
-        }
-
-        // Tier 2: Title + Artist + Album + Exact Size
-        val tier2Matches = envelopeCandidates.filter {
-            it.sizeBytes == item.sizeBytes &&
-                    it.titleNormalized == titleNorm &&
-                    it.artistNormalized == artistNorm &&
-                    it.albumNormalized == albumNorm
+        // Tier 2: Title + Artist + Album + Duration (±1000ms) + Exact Size
+        val tier2Matches = candidates.filter {
+            it.titleNormalized == normTitle &&
+                    it.artistNormalized == normArtist &&
+                    it.albumNormalized == normAlbum &&
+                    abs(it.durationMs - item.durationMs) <= DURATION_TOLERANCE_MS &&
+                    it.sizeBytes == item.sizeBytes
         }
         if (tier2Matches.size == 1) return tier2Matches.first()
-        if (tier2Matches.size > 1) return null // Ambiguity: do not guess
+        if (tier2Matches.size > 1) return null // Ambiguity abort
 
-        // Tier 3: Title + Exact Size
-        val tier3Matches = envelopeCandidates.filter {
-            it.sizeBytes == item.sizeBytes &&
-                    it.titleNormalized == titleNorm
-        }
-        if (tier3Matches.size == 1) return tier3Matches.first()
-
-        // No unique deterministic match
         return null
     }
 
-    private fun normalize(value: String): String {
-        return value.trim().lowercase(Locale.ROOT)
+    private fun normalize(value: String): String = value.trim().lowercase()
+
+    companion object {
+        private const val DURATION_TOLERANCE_MS = 1000L
     }
 }

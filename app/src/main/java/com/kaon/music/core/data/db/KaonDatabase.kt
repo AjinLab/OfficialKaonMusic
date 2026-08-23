@@ -1,15 +1,19 @@
 package com.kaon.music.core.data.db
 
 import android.content.Context
+import androidx.room.AutoMigration
 import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
 import com.kaon.music.core.data.db.dao.FavoriteDao
 import com.kaon.music.core.data.db.dao.PlayEventDao
+import com.kaon.music.core.data.db.dao.PlaylistDao
 import com.kaon.music.core.data.db.dao.QueueSnapshotDao
 import com.kaon.music.core.data.db.dao.TrackDao
 import com.kaon.music.core.data.db.entity.FavoriteTrackEntity
 import com.kaon.music.core.data.db.entity.PlayEventEntity
+import com.kaon.music.core.data.db.entity.PlaylistEntity
+import com.kaon.music.core.data.db.entity.PlaylistTrackEntity
 import com.kaon.music.core.data.db.entity.QueueSnapshotEntity
 import com.kaon.music.core.data.db.entity.TrackEntity
 
@@ -18,7 +22,7 @@ import com.kaon.music.core.data.db.entity.TrackEntity
  *
  * Separation of Concerns (from ARCHITECTURE_ATTRIBUTED.md §7):
  * - Derived tables: [TrackEntity] (rebuildable from MediaStore).
- * - User-owned tables: [FavoriteTrackEntity], [PlayEventEntity] (migrations are sacred).
+ * - User-owned tables: [FavoriteTrackEntity], [PlayEventEntity], [PlaylistEntity], [PlaylistTrackEntity] (migrations are sacred).
  * - Operational tables: [QueueSnapshotEntity] (best-effort restoration).
  */
 @Database(
@@ -26,9 +30,16 @@ import com.kaon.music.core.data.db.entity.TrackEntity
         TrackEntity::class,
         FavoriteTrackEntity::class,
         PlayEventEntity::class,
-        QueueSnapshotEntity::class
+        QueueSnapshotEntity::class,
+        PlaylistEntity::class,
+        PlaylistTrackEntity::class
     ],
-    version = 1,
+    version = 4,
+    autoMigrations = [
+        AutoMigration(from = 1, to = 2),
+        AutoMigration(from = 2, to = 3),
+        AutoMigration(from = 3, to = 4)
+    ],
     exportSchema = true
 )
 abstract class KaonDatabase : RoomDatabase() {
@@ -37,6 +48,7 @@ abstract class KaonDatabase : RoomDatabase() {
     abstract fun favoriteDao(): FavoriteDao
     abstract fun playEventDao(): PlayEventDao
     abstract fun queueSnapshotDao(): QueueSnapshotDao
+    abstract fun playlistDao(): PlaylistDao
 
     companion object {
         private const val DATABASE_NAME = "kaon_music.db"
@@ -51,7 +63,6 @@ abstract class KaonDatabase : RoomDatabase() {
                     KaonDatabase::class.java,
                     DATABASE_NAME
                 )
-                    .fallbackToDestructiveMigration(false)
                     .build()
                     .also { INSTANCE = it }
             }

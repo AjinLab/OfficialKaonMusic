@@ -1,12 +1,12 @@
 {
   "formatVersion": 1,
   "database": {
-    "version": 1,
-    "identityHash": "4039adea633da0ed50c0aee64491f3c2",
+    "version": 2,
+    "identityHash": "684cb25fc3ed6e4326caf6a5e849694c",
     "entities": [
       {
         "tableName": "tracks",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`track_id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `media_store_id` INTEGER NOT NULL, `title` TEXT NOT NULL, `artist` TEXT NOT NULL, `album` TEXT NOT NULL, `album_id` INTEGER NOT NULL, `duration_ms` INTEGER NOT NULL, `size_bytes` INTEGER NOT NULL, `date_modified` INTEGER NOT NULL, `relative_path` TEXT NOT NULL, `title_normalized` TEXT NOT NULL, `artist_normalized` TEXT NOT NULL, `album_normalized` TEXT NOT NULL, `is_missing` INTEGER NOT NULL DEFAULT 0, `last_seen_timestamp` INTEGER NOT NULL)",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`track_id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `media_store_id` INTEGER NOT NULL, `title` TEXT NOT NULL, `artist` TEXT NOT NULL, `artist_id` INTEGER NOT NULL DEFAULT 0, `album` TEXT NOT NULL, `album_id` INTEGER NOT NULL, `track_number` INTEGER NOT NULL DEFAULT 0, `disc_number` INTEGER NOT NULL DEFAULT 1, `year` INTEGER NOT NULL DEFAULT 0, `duration_ms` INTEGER NOT NULL, `size_bytes` INTEGER NOT NULL, `date_modified` INTEGER NOT NULL, `relative_path` TEXT NOT NULL, `title_normalized` TEXT NOT NULL, `artist_normalized` TEXT NOT NULL, `album_normalized` TEXT NOT NULL, `is_missing` INTEGER NOT NULL DEFAULT 0, `last_seen_timestamp` INTEGER NOT NULL)",
         "fields": [
           {
             "fieldPath": "trackId",
@@ -33,6 +33,13 @@
             "notNull": true
           },
           {
+            "fieldPath": "artistId",
+            "columnName": "artist_id",
+            "affinity": "INTEGER",
+            "notNull": true,
+            "defaultValue": "0"
+          },
+          {
             "fieldPath": "album",
             "columnName": "album",
             "affinity": "TEXT",
@@ -43,6 +50,27 @@
             "columnName": "album_id",
             "affinity": "INTEGER",
             "notNull": true
+          },
+          {
+            "fieldPath": "trackNumber",
+            "columnName": "track_number",
+            "affinity": "INTEGER",
+            "notNull": true,
+            "defaultValue": "0"
+          },
+          {
+            "fieldPath": "discNumber",
+            "columnName": "disc_number",
+            "affinity": "INTEGER",
+            "notNull": true,
+            "defaultValue": "1"
+          },
+          {
+            "fieldPath": "year",
+            "columnName": "year",
+            "affinity": "INTEGER",
+            "notNull": true,
+            "defaultValue": "0"
           },
           {
             "fieldPath": "durationMs",
@@ -152,6 +180,24 @@
             ],
             "orders": [],
             "createSql": "CREATE INDEX IF NOT EXISTS `index_tracks_album_normalized` ON `${TABLE_NAME}` (`album_normalized`)"
+          },
+          {
+            "name": "index_tracks_album_id",
+            "unique": false,
+            "columnNames": [
+              "album_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_tracks_album_id` ON `${TABLE_NAME}` (`album_id`)"
+          },
+          {
+            "name": "index_tracks_artist_id",
+            "unique": false,
+            "columnNames": [
+              "artist_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_tracks_artist_id` ON `${TABLE_NAME}` (`artist_id`)"
           }
         ],
         "foreignKeys": []
@@ -357,7 +403,7 @@
     "views": [],
     "setupQueries": [
       "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
-      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '4039adea633da0ed50c0aee64491f3c2')"
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '684cb25fc3ed6e4326caf6a5e849694c')"
     ]
   }
 }

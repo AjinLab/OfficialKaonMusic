@@ -45,22 +45,110 @@ interface TrackDao {
     """)
     fun searchTracks(query: String): Flow<List<TrackEntity>>
 
-    @Query("SELECT DISTINCT album, artist, album_id FROM tracks WHERE is_missing = 0 ORDER BY album_normalized ASC")
-    fun observeDistinctAlbums(): Flow<List<AlbumSummary>>
-
-    @Query("SELECT DISTINCT artist FROM tracks WHERE is_missing = 0 ORDER BY artist_normalized ASC")
-    fun observeDistinctArtists(): Flow<List<String>>
-
-    @Query("SELECT * FROM tracks WHERE album = :album AND is_missing = 0 ORDER BY track_id ASC")
-    fun observeTracksByAlbum(album: String): Flow<List<TrackEntity>>
-
-    @Query("SELECT * FROM tracks WHERE artist = :artist AND is_missing = 0 ORDER BY album_normalized, title_normalized ASC")
-    fun observeTracksByArtist(artist: String): Flow<List<TrackEntity>>
-
     /**
-     * Re-linking heuristic lookup query (§2 of ARCHITECTURE_ATTRIBUTED.md):
-     * Finds candidates within duration tolerance (+-1000ms) and exact file size.
+     * Recently added active tracks ordered by date_added DESC.
      */
+    @Query("SELECT * FROM tracks WHERE is_missing = 0 ORDER BY date_added DESC LIMIT :limit")
+    fun observeRecentlyAddedTracks(limit: Int = 100): Flow<List<TrackEntity>>
+
+    @Query("SELECT * FROM tracks WHERE is_missing = 0 ORDER BY date_added DESC LIMIT :limit")
+    suspend fun getRecentlyAddedTracks(limit: Int = 100): List<TrackEntity>
+
+    // ==================== M3-D1 Derived Albums ====================
+
+    @Query("""
+        SELECT 
+            album_id,
+            album,
+            artist,
+            artist_id,
+            MAX(year) as year,
+            COUNT(track_id) as track_count,
+            SUM(duration_ms) as total_duration_ms
+        FROM tracks 
+        WHERE is_missing = 0 
+        GROUP BY album_id 
+        ORDER BY album_normalized ASC
+    """)
+    fun observeAllAlbums(): Flow<List<AlbumSummary>>
+
+    @Query("""
+        SELECT 
+            album_id,
+            album,
+            artist,
+            artist_id,
+            MAX(year) as year,
+            COUNT(track_id) as track_count,
+            SUM(duration_ms) as total_duration_ms
+        FROM tracks 
+        WHERE is_missing = 0 AND album_id = :albumId
+        GROUP BY album_id 
+        LIMIT 1
+    """)
+    suspend fun getAlbumById(albumId: Long): AlbumSummary?
+
+    @Query("""
+        SELECT * FROM tracks 
+        WHERE album_id = :albumId AND is_missing = 0 
+        ORDER BY disc_number ASC, track_number ASC, title_normalized ASC
+    """)
+    fun observeTracksForAlbum(albumId: Long): Flow<List<TrackEntity>>
+
+    @Query("""
+        SELECT * FROM tracks 
+        WHERE album_id = :albumId AND is_missing = 0 
+        ORDER BY disc_number ASC, track_number ASC, title_normalized ASC
+    """)
+    suspend fun getTracksForAlbum(albumId: Long): List<TrackEntity>
+
+    // ==================== M3-D1 Derived Artists ====================
+
+    @Query("""
+        SELECT 
+            artist_id,
+            artist,
+            COUNT(DISTINCT album_id) as album_count,
+            COUNT(track_id) as track_count
+        FROM tracks 
+        WHERE is_missing = 0 
+        GROUP BY artist_normalized 
+        ORDER BY artist_normalized ASC
+    """)
+    fun observeAllArtists(): Flow<List<ArtistSummary>>
+
+    @Query("""
+        SELECT 
+            album_id,
+            album,
+            artist,
+            artist_id,
+            MAX(year) as year,
+            COUNT(track_id) as track_count,
+            SUM(duration_ms) as total_duration_ms
+        FROM tracks 
+        WHERE is_missing = 0 AND artist_normalized = :artistNormalized
+        GROUP BY album_id 
+        ORDER BY year DESC, album_normalized ASC
+    """)
+    fun observeAlbumsForArtist(artistNormalized: String): Flow<List<AlbumSummary>>
+
+    @Query("""
+        SELECT * FROM tracks 
+        WHERE artist_normalized = :artistNormalized AND is_missing = 0 
+        ORDER BY year DESC, album_normalized ASC, disc_number ASC, track_number ASC, title_normalized ASC
+    """)
+    fun observeTracksForArtist(artistNormalized: String): Flow<List<TrackEntity>>
+
+    @Query("""
+        SELECT * FROM tracks 
+        WHERE artist_normalized = :artistNormalized AND is_missing = 0 
+        ORDER BY year DESC, album_normalized ASC, disc_number ASC, track_number ASC, title_normalized ASC
+    """)
+    suspend fun getTracksForArtist(artistNormalized: String): List<TrackEntity>
+
+    // ==================== Re-linking & Mutation Queries ====================
+
     @Query("""
         SELECT * FROM tracks 
         WHERE is_missing = 1 
@@ -98,8 +186,19 @@ interface TrackDao {
     suspend fun purgeOrphanedTracks(purgeCutoffTimestamp: Long): Int
 
     data class AlbumSummary(
+        val album_id: Long,
         val album: String,
         val artist: String,
-        val album_id: Long
+        val artist_id: Long,
+        val year: Int,
+        val track_count: Int,
+        val total_duration_ms: Long
+    )
+
+    data class ArtistSummary(
+        val artist_id: Long,
+        val artist: String,
+        val album_count: Int,
+        val track_count: Int
     )
 }

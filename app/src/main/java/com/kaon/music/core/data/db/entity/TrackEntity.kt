@@ -19,7 +19,10 @@ import androidx.room.PrimaryKey
         Index(value = ["duration_ms", "size_bytes"]),
         Index(value = ["title_normalized"]),
         Index(value = ["artist_normalized"]),
-        Index(value = ["album_normalized"])
+        Index(value = ["album_normalized"]),
+        Index(value = ["album_id"]),
+        Index(value = ["artist_id"]),
+        Index(value = ["date_added"])
     ]
 )
 data class TrackEntity(
@@ -36,11 +39,23 @@ data class TrackEntity(
     @ColumnInfo(name = "artist")
     val artist: String,
 
+    @ColumnInfo(name = "artist_id", defaultValue = "0")
+    val artistId: Long = 0,
+
     @ColumnInfo(name = "album")
     val album: String,
 
     @ColumnInfo(name = "album_id")
     val albumId: Long,
+
+    @ColumnInfo(name = "track_number", defaultValue = "0")
+    val trackNumber: Int = 0,
+
+    @ColumnInfo(name = "disc_number", defaultValue = "1")
+    val discNumber: Int = 1,
+
+    @ColumnInfo(name = "year", defaultValue = "0")
+    val year: Int = 0,
 
     @ColumnInfo(name = "duration_ms")
     val durationMs: Long,
@@ -50,6 +65,9 @@ data class TrackEntity(
 
     @ColumnInfo(name = "date_modified")
     val dateModified: Long,
+
+    @ColumnInfo(name = "date_added", defaultValue = "0")
+    val dateAdded: Long = 0L,
 
     @ColumnInfo(name = "relative_path")
     val relativePath: String,

@@ -19,8 +19,4 @@ class HistoryRepository(
             )
         )
     }
-
-    fun observeRecentlyPlayedTrackIds(limit: Int = 50): Flow<List<Long>> {
-        return playEventDao.observeRecentlyPlayedTrackIds(limit)
-    }
 }

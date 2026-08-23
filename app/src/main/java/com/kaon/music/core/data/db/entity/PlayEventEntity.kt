@@ -26,7 +26,8 @@ import androidx.room.PrimaryKey
     indices = [
         Index(value = ["track_id"]),
         Index(value = ["played_at"]),
-        Index(value = ["event_type"])
+        Index(value = ["event_type"]),
+        Index(value = ["event_type", "track_id", "played_at"])
     ]
 )
 data class PlayEventEntity(
@@ -44,5 +45,5 @@ data class PlayEventEntity(
     val playedAt: Long = System.currentTimeMillis(),
 
     @ColumnInfo(name = "played_ms")
-    val playedMs: Long
+    val playedMs: Long = 0L
 )
