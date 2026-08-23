@@ -9,15 +9,22 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.Box
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.outlined.FavoriteBorder
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -39,6 +46,9 @@ fun TrackItem(
     isCurrent: Boolean,
     onClick: () -> Unit,
     onFavoriteToggle: () -> Unit,
+    onPlayNext: (() -> Unit)? = null,
+    onAddToQueue: (() -> Unit)? = null,
+    onAddToPlaylist: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val titleColor by animateColorAsState(
@@ -99,6 +109,59 @@ fun TrackItem(
                 tint = if (track.isFavorite) KaonHeartRed else KaonTextTertiary,
                 modifier = Modifier.size(20.dp)
             )
+        }
+
+        if (onPlayNext != null || onAddToQueue != null || onAddToPlaylist != null) {
+            var isMenuExpanded by remember { mutableStateOf(false) }
+            Box {
+                IconButton(onClick = { isMenuExpanded = true }) {
+                    Icon(
+                        imageVector = Icons.Default.MoreVert,
+                        contentDescription = "Track options",
+                        tint = KaonTextTertiary,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+                DropdownMenu(
+                    expanded = isMenuExpanded,
+                    onDismissRequest = { isMenuExpanded = false }
+                ) {
+                    DropdownMenuItem(
+                        text = { Text(if (track.isFavorite) "Remove from Favorites" else "Add to Favorites") },
+                        onClick = {
+                            isMenuExpanded = false
+                            onFavoriteToggle()
+                        }
+                    )
+                    if (onAddToPlaylist != null) {
+                        DropdownMenuItem(
+                            text = { Text("Add to Playlist") },
+                            onClick = {
+                                isMenuExpanded = false
+                                onAddToPlaylist()
+                            }
+                        )
+                    }
+                    if (onPlayNext != null) {
+                        DropdownMenuItem(
+                            text = { Text("Play next") },
+                            onClick = {
+                                isMenuExpanded = false
+                                onPlayNext()
+                            }
+                        )
+                    }
+                    if (onAddToQueue != null) {
+                        DropdownMenuItem(
+                            text = { Text("Add to queue") },
+                            onClick = {
+                                isMenuExpanded = false
+                                onAddToQueue()
+                            }
+                        )
+                    }
+                }
+            }
         }
     }
 }
