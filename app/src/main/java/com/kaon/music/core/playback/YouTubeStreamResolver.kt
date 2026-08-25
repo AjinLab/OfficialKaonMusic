@@ -1,9 +1,15 @@
 package com.kaon.music.core.playback
 
+import android.content.Context
+import android.net.ConnectivityManager
+import com.kaon.music.core.online.AudioQuality
+import com.kaon.music.core.online.YTPlayerUtils
+import com.kaon.music.core.online.cipher.CipherDeobfuscator
 import com.metrolist.innertube.NewPipeExtractor
 import com.metrolist.innertube.YouTube
 import com.metrolist.innertube.models.YouTubeClient
 import com.metrolist.innertube.models.response.PlayerResponse
+import com.metrolist.innertube.strategy.ContentHints
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
@@ -23,12 +29,17 @@ class RateLimitException(message: String) : Exception(message)
 class StreamResolutionException(message: String, cause: Throwable? = null) : Exception(message, cause)
 
 /**
- * Resolves YouTube audio streams on-demand with rate limiting, volatile in-memory caching (5-minute TTL),
- * client rotation, signature deciphering, and pre-resolution for gapless queue transitions.
+ * Resolves YouTube audio streams on-demand using Metrolist's exact playback & PoToken/Cipher architecture:
+ * - Rate limiting (Max 30/min)
+ * - In-memory volatile caching (5-minute TTL)
+ * - PoToken generation (BotGuard headless WebView)
+ * - Cipher / STS signature deciphering (JS AST solver)
+ * - Content-aware client rotation (WEB_REMIX, VISIONOS, ANDROID_VR, TVHTML5)
+ * - Pre-resolution for gapless queue transitions
  */
 object YouTubeStreamResolver {
 
-    private const val RESOLUTION_TIMEOUT_MS = 10_000L
+    private const val RESOLUTION_TIMEOUT_MS = 12_000L
     private const val CACHE_TTL_MS = 5 * 60 * 1000L // 5 minutes in-memory TTL
 
     private data class CachedStream(
@@ -66,7 +77,7 @@ object YouTubeStreamResolver {
 
     /**
      * Resolves a playable audio stream URL for [videoId].
-     * Checks in-memory cache first, enforces rate limiting, and performs fallback client resolution.
+     * Checks in-memory cache first, enforces rate limiting, and performs Metrolist YTPlayerUtils resolution.
      */
     suspend fun resolveStreamUrl(videoId: String): Result<String> = withContext(Dispatchers.IO) {
         val trimmedId = videoId.trim()
@@ -88,7 +99,33 @@ object YouTubeStreamResolver {
             return@withContext Result.failure(RateLimitException("Too many requests. Please wait."))
         }
 
-        // 3. Resolve stream URL with timeout
+        // 3. Primary Metrolist YTPlayerUtils resolution with PoToken and Cipher
+        val context = if (CipherDeobfuscator.isInitialized) CipherDeobfuscator.appContext else null
+        val cm = context?.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+
+        if (cm != null) {
+            try {
+                withTimeout(RESOLUTION_TIMEOUT_MS) {
+                    val playbackResult = YTPlayerUtils.playerResponseForPlayback(
+                        videoId = trimmedId,
+                        audioQuality = AudioQuality.HIGH,
+                        connectivityManager = cm,
+                        contentHints = ContentHints()
+                    )
+                    val playbackData = playbackResult.getOrNull()
+                    if (playbackData != null && playbackData.streamUrl.isNotBlank()) {
+                        val expiryMs = (playbackData.streamExpiresInSeconds.toLong() * 1000L).coerceAtLeast(CACHE_TTL_MS)
+                        streamCache[trimmedId] = CachedStream(playbackData.streamUrl, now + expiryMs)
+                        Timber.tag("StreamResolver").d("Resolved stream via Metrolist YTPlayerUtils for $trimmedId")
+                        return@withTimeout Result.success(playbackData.streamUrl)
+                    }
+                }
+            } catch (e: Exception) {
+                Timber.tag("StreamResolver").w(e, "YTPlayerUtils primary resolution failed for $trimmedId, falling back")
+            }
+        }
+
+        // 4. Fallback multi-client rotation
         try {
             withTimeout(RESOLUTION_TIMEOUT_MS) {
                 var attempt = 0
@@ -109,22 +146,8 @@ object YouTubeStreamResolver {
 
                     attempt++
                     if (attempt < fallbackClients.size) {
-                        delay(50L * attempt) // Subtle backoff before next client
+                        delay(50L * attempt)
                     }
-                }
-
-                // Final fallback using default WEB_REMIX
-                try {
-                    val response = YouTube.player(trimmedId, client = YouTubeClient.WEB_REMIX).getOrNull()
-                    if (response?.streamingData != null) {
-                        val streamUrl = findBestAudioStream(response.streamingData!!, trimmedId)
-                        if (streamUrl != null) {
-                            streamCache[trimmedId] = CachedStream(streamUrl, now + CACHE_TTL_MS)
-                            return@withTimeout Result.success(streamUrl)
-                        }
-                    }
-                } catch (e: Exception) {
-                    Timber.tag("StreamResolver").e(e, "Final fallback failed for video $trimmedId")
                 }
 
                 Result.failure(StreamResolutionException("No playable audio stream found for videoId: $trimmedId"))
@@ -166,7 +189,7 @@ object YouTubeStreamResolver {
         val allFormats = (streamingData.adaptiveFormats.orEmpty() + streamingData.formats.orEmpty())
         val audioFormats = allFormats.filter { it.mimeType.startsWith("audio/") }
 
-        // Sort by audio bitrate descending (prefer highest quality audio stream)
+        // Sort by audio bitrate descending
         val sortedAudio = audioFormats.sortedByDescending { it.bitrate ?: 0 }
 
         for (format in sortedAudio) {
