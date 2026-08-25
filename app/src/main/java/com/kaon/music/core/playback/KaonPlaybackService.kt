@@ -30,6 +30,15 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import timber.log.Timber
 
+import android.net.Uri
+import androidx.media3.datasource.DataSpec
+import androidx.media3.datasource.DefaultDataSource
+import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.datasource.ResolvingDataSource
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import com.kaon.music.core.data.online.YouTubeSessionManager
+import kotlinx.coroutines.runBlocking
+
 /**
  * Android MediaSessionService hosting the ExoPlayer instance.
  *
@@ -37,6 +46,7 @@ import timber.log.Timber
  * - Single source of truth for runtime playback state and live timeline.
  * - Media3 owns audio focus and becoming-noisy events.
  * - Manages queue snapshot restoration on cold start and debounced persistence.
+ * - Handles hybrid playback: instant local audio & on-demand YouTube streaming.
  */
 class KaonPlaybackService : MediaSessionService() {
 
@@ -50,6 +60,7 @@ class KaonPlaybackService : MediaSessionService() {
     private lateinit var trackRepository: TrackRepository
     private lateinit var historyRepository: HistoryRepository
     private lateinit var snapshotManager: QueueSnapshotManager
+    private lateinit var youtubeSessionManager: YouTubeSessionManager
 
     private var currentTrackId: Long? = null
     private var trackStartPlayTimestampMs: Long = 0L
@@ -66,14 +77,45 @@ class KaonPlaybackService : MediaSessionService() {
         trackRepository = TrackRepository(database.trackDao(), database.favoriteDao(), syncEngine, database.playEventDao())
         historyRepository = HistoryRepository(database.playEventDao())
         snapshotManager = QueueSnapshotManager(database.queueSnapshotDao(), serviceScope)
+        youtubeSessionManager = YouTubeSessionManager(applicationContext, serviceScope)
 
-        // 1. Build and configure ExoPlayer with built-in Focus and Becoming Noisy handling
+        // 1. Build and configure ExoPlayer with ResolvingDataSource for online streams
         val audioAttributes = AudioAttributes.Builder()
             .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
             .setUsage(C.USAGE_MEDIA)
             .build()
 
+        val httpDataSourceFactory = DefaultHttpDataSource.Factory()
+            .setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+            .setConnectTimeoutMs(15000)
+            .setReadTimeoutMs(15000)
+
+        val resolvingDataSourceFactory = ResolvingDataSource.Factory(
+            httpDataSourceFactory,
+            object : ResolvingDataSource.Resolver {
+                override fun resolveDataSpec(dataSpec: DataSpec): DataSpec {
+                    val uri = dataSpec.uri
+                    if (uri.scheme == "youtube" || uri.host == "youtube.com" || uri.host == "youtu.be") {
+                        val videoId = uri.getQueryParameter("v") ?: uri.host.takeIf { uri.scheme == "youtube" } ?: uri.lastPathSegment ?: ""
+                        if (videoId.isNotBlank()) {
+                            val resolvedUrl = runBlocking {
+                                YouTubeStreamResolver.resolveStreamUrl(videoId).getOrNull()
+                            }
+                            if (!resolvedUrl.isNullOrBlank()) {
+                                return dataSpec.buildUpon().setUri(Uri.parse(resolvedUrl)).build()
+                            }
+                        }
+                    }
+                    return dataSpec
+                }
+            }
+        )
+
+        val dataSourceFactory = DefaultDataSource.Factory(this, resolvingDataSourceFactory)
+        val mediaSourceFactory = DefaultMediaSourceFactory(dataSourceFactory)
+
         player = ExoPlayer.Builder(this)
+            .setMediaSourceFactory(mediaSourceFactory)
             .setAudioAttributes(audioAttributes, true) // Media3 handles audio focus
             .setHandleAudioBecomingNoisy(true) // Media3 handles becoming noisy (pause on unplug)
             .build()
@@ -214,14 +256,19 @@ class KaonPlaybackService : MediaSessionService() {
             if (player.mediaItemCount > 0) return@launch
 
             val mediaItems = tracks.map { track ->
+                val uri = when {
+                    track.source == "YOUTUBE" && !track.youtubeVideoId.isNullOrBlank() -> Uri.parse("youtube://${track.youtubeVideoId}")
+                    else -> track.contentUri
+                }
                 MediaItem.Builder()
                     .setMediaId(track.id.toString())
-                    .setUri(track.contentUri)
+                    .setUri(uri)
                     .setMediaMetadata(
                         MediaMetadata.Builder()
                             .setTitle(track.title)
                             .setArtist(track.artist)
                             .setAlbumTitle(track.album)
+                            .setArtworkUri(track.contentUri.takeIf { track.source == "YOUTUBE" })
                             .build()
                     )
                     .build()

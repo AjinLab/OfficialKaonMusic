@@ -2,6 +2,7 @@ package com.kaon.music.core.playback
 
 import android.content.ComponentName
 import android.content.Context
+import android.net.Uri
 import android.os.Bundle
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
@@ -397,14 +398,19 @@ class PlaybackFacade(
     }
 
     private fun Track.toMediaItem(): MediaItem {
+        val uri = when {
+            source == "YOUTUBE" && !youtubeVideoId.isNullOrBlank() -> Uri.parse("youtube://$youtubeVideoId")
+            else -> contentUri
+        }
         return MediaItem.Builder()
             .setMediaId(id.toString())
-            .setUri(contentUri)
+            .setUri(uri)
             .setMediaMetadata(
                 MediaMetadata.Builder()
                     .setTitle(title)
                     .setArtist(artist)
                     .setAlbumTitle(album)
+                    .setArtworkUri(contentUri.takeIf { source == "YOUTUBE" })
                     .build()
             )
             .build()

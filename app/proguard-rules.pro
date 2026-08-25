@@ -25,3 +25,13 @@
 # Timber
 -dontwarn timber.log.**
 
+# InnerTube & Serialization
+-keep class com.metrolist.innertube.models.** { *; }
+-keep class com.metrolist.innertubex.models.** { *; }
+-keepclassmembers class * {
+    @kotlinx.serialization.Serializable <fields>;
+}
+-dontwarn kotlinx.serialization.**
+-dontwarn io.ktor.**
+-dontwarn java.beans.**
+-dontwarn org.mozilla.javascript.**
