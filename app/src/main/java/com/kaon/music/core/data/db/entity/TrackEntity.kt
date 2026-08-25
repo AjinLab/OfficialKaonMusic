@@ -22,7 +22,9 @@ import androidx.room.PrimaryKey
         Index(value = ["album_normalized"]),
         Index(value = ["album_id"]),
         Index(value = ["artist_id"]),
-        Index(value = ["date_added"])
+        Index(value = ["date_added"]),
+        Index(value = ["youtube_video_id"]),
+        Index(value = ["source"])
     ]
 )
 data class TrackEntity(
@@ -83,6 +85,12 @@ data class TrackEntity(
 
     @ColumnInfo(name = "is_missing", defaultValue = "0")
     val isMissing: Boolean = false,
+
+    @ColumnInfo(name = "source", defaultValue = "LOCAL")
+    val source: String = "LOCAL",
+
+    @ColumnInfo(name = "youtube_video_id")
+    val youtubeVideoId: String? = null,
 
     @ColumnInfo(name = "last_seen_timestamp")
     val lastSeenTimestamp: Long = System.currentTimeMillis()

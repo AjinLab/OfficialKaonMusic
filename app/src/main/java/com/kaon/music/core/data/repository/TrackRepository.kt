@@ -273,7 +273,9 @@ class TrackRepository(
             dateAdded = dateAdded,
             contentUri = uri,
             isFavorite = isFavorite,
-            isMissing = isMissing
+            isMissing = isMissing,
+            source = source,
+            youtubeVideoId = youtubeVideoId
         )
     }
 }

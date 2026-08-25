@@ -39,9 +39,12 @@ data class Track(
     val dateAdded: Long = 0L,
     val contentUri: Uri? = null,
     val isFavorite: Boolean = false,
-    val isMissing: Boolean = false
+    val isMissing: Boolean = false,
+    val source: String = "LOCAL",
+    val youtubeVideoId: String? = null
 ) {
     val displayTitle: String get() = title.ifBlank { "Unknown Title" }
     val displayArtist: String get() = artist.ifBlank { "Unknown Artist" }
     val displayAlbum: String get() = album.ifBlank { "Unknown Album" }
+    val isOnline: Boolean get() = source == "YOUTUBE"
 }
