@@ -29,21 +29,32 @@ class RateLimitException(message: String) : Exception(message)
 class StreamResolutionException(message: String, cause: Throwable? = null) : Exception(message, cause)
 
 /**
+ * Encapsulates the resolved playable stream and associated HTTP headers.
+ */
+data class ResolvedStreamData(
+    val url: String,
+    val headers: Map<String, String> = emptyMap(),
+    val clientName: String = "unknown",
+    val expiresInSeconds: Int = 300
+)
+
+/**
  * Resolves YouTube audio streams on-demand using Metrolist's exact playback & PoToken/Cipher architecture:
  * - Rate limiting (Max 30/min)
  * - In-memory volatile caching (5-minute TTL)
  * - PoToken generation (BotGuard headless WebView)
  * - Cipher / STS signature deciphering (JS AST solver)
  * - Content-aware client rotation (WEB_REMIX, VISIONOS, ANDROID_VR, TVHTML5)
+ * - Headers injection (User-Agent, Origin, Referer) for CDN authorization
  * - Pre-resolution for gapless queue transitions
  */
 object YouTubeStreamResolver {
 
-    private const val RESOLUTION_TIMEOUT_MS = 12_000L
+    private const val RESOLUTION_TIMEOUT_MS = 15_000L
     private const val CACHE_TTL_MS = 5 * 60 * 1000L // 5 minutes in-memory TTL
 
     private data class CachedStream(
-        val streamUrl: String,
+        val data: ResolvedStreamData,
         val expiresAtMs: Long
     )
 
@@ -76,10 +87,9 @@ object YouTubeStreamResolver {
     }
 
     /**
-     * Resolves a playable audio stream URL for [videoId].
-     * Checks in-memory cache first, enforces rate limiting, and performs Metrolist YTPlayerUtils resolution.
+     * Resolves playable audio stream data with URL and required HTTP headers for [videoId].
      */
-    suspend fun resolveStreamUrl(videoId: String): Result<String> = withContext(Dispatchers.IO) {
+    suspend fun resolveStreamData(videoId: String): Result<ResolvedStreamData> = withContext(Dispatchers.IO) {
         val trimmedId = videoId.trim()
         if (trimmedId.isBlank()) {
             return@withContext Result.failure(IllegalArgumentException("Invalid videoId: blank"))
@@ -89,8 +99,8 @@ object YouTubeStreamResolver {
         val now = System.currentTimeMillis()
         val cached = streamCache[trimmedId]
         if (cached != null && cached.expiresAtMs > now) {
-            Timber.tag("StreamResolver").d("Serving cached stream URL for $trimmedId")
-            return@withContext Result.success(cached.streamUrl)
+            Timber.tag("StreamResolver").d("Serving cached stream data for $trimmedId")
+            return@withContext Result.success(cached.data)
         }
 
         // 2. Enforce Rate Limiting
@@ -99,7 +109,7 @@ object YouTubeStreamResolver {
             return@withContext Result.failure(RateLimitException("Too many requests. Please wait."))
         }
 
-        // 3. Primary Metrolist YTPlayerUtils resolution with PoToken and Cipher
+        // 3. Primary Metrolist YTPlayerUtils resolution with PoToken, Cipher, and headers
         val context = if (CipherDeobfuscator.isInitialized) CipherDeobfuscator.appContext else null
         val cm = context?.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
 
@@ -114,10 +124,16 @@ object YouTubeStreamResolver {
                     )
                     val playbackData = playbackResult.getOrNull()
                     if (playbackData != null && playbackData.streamUrl.isNotBlank()) {
+                        val resolved = ResolvedStreamData(
+                            url = playbackData.streamUrl,
+                            headers = playbackData.streamHeaders,
+                            clientName = playbackData.streamClient,
+                            expiresInSeconds = playbackData.streamExpiresInSeconds
+                        )
                         val expiryMs = (playbackData.streamExpiresInSeconds.toLong() * 1000L).coerceAtLeast(CACHE_TTL_MS)
-                        streamCache[trimmedId] = CachedStream(playbackData.streamUrl, now + expiryMs)
-                        Timber.tag("StreamResolver").d("Resolved stream via Metrolist YTPlayerUtils for $trimmedId")
-                        return@withTimeout Result.success(playbackData.streamUrl)
+                        streamCache[trimmedId] = CachedStream(resolved, now + expiryMs)
+                        Timber.tag("StreamResolver").d("Resolved stream via Metrolist YTPlayerUtils for $trimmedId (client=${resolved.clientName}, headers=${resolved.headers.keys})")
+                        return@withTimeout Result.success(resolved)
                     }
                 }
             } catch (e: Exception) {
@@ -136,8 +152,18 @@ object YouTubeStreamResolver {
                         if (response != null && response.playabilityStatus.status == "OK" && response.streamingData != null) {
                             val streamUrl = findBestAudioStream(response.streamingData!!, trimmedId)
                             if (streamUrl != null) {
-                                streamCache[trimmedId] = CachedStream(streamUrl, now + CACHE_TTL_MS)
-                                return@withTimeout Result.success(streamUrl)
+                                val resolved = ResolvedStreamData(
+                                    url = streamUrl,
+                                    headers = mapOf(
+                                        "User-Agent" to client.userAgent,
+                                        "Referer" to "https://www.youtube.com/",
+                                        "Origin" to "https://www.youtube.com"
+                                    ),
+                                    clientName = client.clientName,
+                                    expiresInSeconds = 300
+                                )
+                                streamCache[trimmedId] = CachedStream(resolved, now + CACHE_TTL_MS)
+                                return@withTimeout Result.success(resolved)
                             }
                         }
                     } catch (e: Exception) {
@@ -162,6 +188,13 @@ object YouTubeStreamResolver {
     }
 
     /**
+     * Resolves a playable audio stream URL for [videoId].
+     */
+    suspend fun resolveStreamUrl(videoId: String): Result<String> {
+        return resolveStreamData(videoId).map { it.url }
+    }
+
+    /**
      * Pre-resolves and caches the stream URL for the upcoming track in the queue.
      */
     suspend fun preResolve(videoId: String?) {
@@ -171,11 +204,15 @@ object YouTubeStreamResolver {
         val cached = streamCache[trimmedId]
         if (cached == null || cached.expiresAtMs <= now) {
             try {
-                resolveStreamUrl(trimmedId)
+                resolveStreamData(trimmedId)
             } catch (e: Throwable) {
                 Timber.tag("StreamResolver").d("Background pre-resolve ignored error: ${e.message}")
             }
         }
+    }
+
+    fun invalidate(videoId: String) {
+        streamCache.remove(videoId.trim())
     }
 
     fun clearCache() {

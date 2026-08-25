@@ -7,6 +7,7 @@ import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
+import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.session.MediaSession
@@ -89,20 +90,30 @@ class KaonPlaybackService : MediaSessionService() {
             .setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
             .setConnectTimeoutMs(15000)
             .setReadTimeoutMs(15000)
+            .setAllowCrossProtocolRedirects(true)
 
         val resolvingDataSourceFactory = ResolvingDataSource.Factory(
             httpDataSourceFactory,
             object : ResolvingDataSource.Resolver {
                 override fun resolveDataSpec(dataSpec: DataSpec): DataSpec {
                     val uri = dataSpec.uri
-                    if (uri.scheme == "youtube" || uri.host == "youtube.com" || uri.host == "youtu.be") {
-                        val videoId = uri.getQueryParameter("v") ?: uri.host.takeIf { uri.scheme == "youtube" } ?: uri.lastPathSegment ?: ""
+                    if (uri.scheme == "youtube" || uri.host == "youtube.com" || uri.host == "music.youtube.com" || uri.host == "youtu.be") {
+                        val videoId = when {
+                            uri.scheme == "youtube" -> uri.authority ?: uri.host ?: uri.schemeSpecificPart?.removePrefix("//") ?: ""
+                            uri.host == "youtube.com" || uri.host == "music.youtube.com" -> uri.getQueryParameter("v") ?: ""
+                            uri.host == "youtu.be" -> uri.lastPathSegment ?: ""
+                            else -> ""
+                        }.trim()
+
                         if (videoId.isNotBlank()) {
-                            val resolvedUrl = runBlocking {
-                                YouTubeStreamResolver.resolveStreamUrl(videoId).getOrNull()
+                            val resolved = runBlocking {
+                                YouTubeStreamResolver.resolveStreamData(videoId).getOrNull()
                             }
-                            if (!resolvedUrl.isNullOrBlank()) {
-                                return dataSpec.buildUpon().setUri(Uri.parse(resolvedUrl)).build()
+                            if (resolved != null && resolved.url.isNotBlank()) {
+                                return dataSpec.buildUpon()
+                                    .setUri(Uri.parse(resolved.url))
+                                    .setHttpRequestHeaders(dataSpec.httpRequestHeaders + resolved.headers)
+                                    .build()
                             }
                         }
                     }
@@ -162,6 +173,32 @@ class KaonPlaybackService : MediaSessionService() {
             }
 
             override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+                val currentItem = player.currentMediaItem
+                val uri = currentItem?.localConfiguration?.uri
+                val isYouTube = uri != null && (uri.scheme == "youtube" || uri.host == "youtube.com" || uri.host == "music.youtube.com" || uri.host == "youtu.be")
+                val videoId = if (isYouTube) {
+                    when {
+                        uri!!.scheme == "youtube" -> uri.authority ?: uri.host ?: uri.schemeSpecificPart?.removePrefix("//") ?: ""
+                        uri.host == "youtube.com" || uri.host == "music.youtube.com" -> uri.getQueryParameter("v") ?: ""
+                        uri.host == "youtu.be" -> uri.lastPathSegment ?: ""
+                        else -> ""
+                    }.trim()
+                } else ""
+
+                val is403or410 = error.errorCode == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS ||
+                    error.cause?.message?.contains("403") == true ||
+                    error.cause?.message?.contains("410") == true
+
+                if (isYouTube && videoId.isNotBlank() && is403or410 && consecutiveErrorCount == 0) {
+                    consecutiveErrorCount++
+                    Timber.tag("PlaybackService").i("403/410 detected on YouTube video $videoId — invalidating cache and retrying with fallback client")
+                    com.kaon.music.core.online.YTPlayerUtils.markWebRemixFailed(videoId)
+                    YouTubeStreamResolver.invalidate(videoId)
+                    player.prepare()
+                    player.play()
+                    return
+                }
+
                 consecutiveErrorCount++
                 val failedTitle = player.currentMediaItem?.mediaMetadata?.title?.toString() ?: "Unknown Track"
                 Timber.tag("PlaybackService").w(error, "Playback error on track '$failedTitle' (consecutive error count: $consecutiveErrorCount)")

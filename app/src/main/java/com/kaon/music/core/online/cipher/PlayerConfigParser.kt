@@ -81,7 +81,7 @@ object PlayerConfigParser {
             // whole file so callers keep their previous table.
             val keys = listOf(hash) + aliases
             val duplicate = keys.firstOrNull { it in configs }
-                ?: keys.groupingBy { it }.eachCount().entries.firstOrNull { it.value > 1 }?.key
+                ?: (if (keys.distinct().size != keys.size) keys.firstOrNull { k -> keys.count { it == k } > 1 } else null)
             if (duplicate != null) {
                 return ParseResult.Failure("duplicate hash/alias '$duplicate' (entry $hash)")
             }
