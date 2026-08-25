@@ -305,6 +305,7 @@ class PlaybackFacade(
             controller.prepare()
             controller.play()
         }
+        triggerNextTrackPreResolution(queue, targetIndex)
     }
 
     fun playQueue(queue: List<Track>, startIndex: Int = 0) {
@@ -317,6 +318,19 @@ class PlaybackFacade(
         controller.setMediaItems(mediaItems, index, 0L)
         controller.prepare()
         controller.play()
+        triggerNextTrackPreResolution(queue, index)
+    }
+
+    private fun triggerNextTrackPreResolution(queue: List<Track>, currentIndex: Int) {
+        val nextIndex = currentIndex + 1
+        if (nextIndex in queue.indices) {
+            val nextTrack = queue[nextIndex]
+            if (nextTrack.source == "YOUTUBE" && !nextTrack.youtubeVideoId.isNullOrBlank()) {
+                facadeScope.launch {
+                    YouTubeStreamResolver.preResolve(nextTrack.youtubeVideoId)
+                }
+            }
+        }
     }
 
     /**
