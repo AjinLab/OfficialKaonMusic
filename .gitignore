@@ -24,3 +24,6 @@ release-keystore.properties
 # Do NOT ignore Room schemas
 !app/schemas/
 
+# Kotlin tooling metadata
+.kotlin/
+

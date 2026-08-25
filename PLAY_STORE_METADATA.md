@@ -13,35 +13,35 @@
 ## Store Descriptions
 
 ### Short Description (Max 80 characters)
-> Lightweight, private, and powerful offline music player with smart playlists.
+> Elegant, high-performance music player for local files and online streaming.
 
 ### Full Description
 ```
-Kaon Music is a high-performance, privacy-first local music player crafted for music lovers who value speed, beauty, and control.
+Kaon Music is a high-performance, privacy-first music player crafted for music lovers who value speed, elegance, and control over both local audio libraries and online streaming.
 
 KEY FEATURES:
-• Complete Local Library: Browse and play your audio files across 6 dynamic tabs: Tracks, Albums, Artists, Favorites, Recent, and Playlists.
-• Resilient Playlists: Create and manage custom playlists with instantaneous drag-to-reorder. Your playlist memberships survive SD card unmounts and file moves without data loss.
-• Smart History & Stats: Pure SQL-powered Recently Played, Most Played, and Recently Added views without bloated cache tables or background battery drain.
-• Universal Playback Queue: Persistent playback state with full-permutation shuffle, gapless position restore, and crash-resilient queue persistence across process death.
-• Pure Offline Privacy: 100% offline. Zero Internet permission (android.permission.INTERNET is completely absent). No telemetry, no ads, no background tracking.
-• Premium Modern Design: Fast, fluid Jetpack Compose interface with dark-mode aesthetic, dynamic micro-animations, and full Android 15 edge-to-edge support.
-• Full Media3 Engine: ExoPlayer foreground service, notification playback controls, and seamless audio focus handling.
-
-Enjoy your music the way it was meant to be heard—uninterrupted, offline, and completely private.
+• Complete Local Library: Browse and play your local audio files across 6 dynamic tabs: Tracks, Albums, Artists, Favorites, Recent, and Playlists.
+• Online Discovery & Streaming: Seamlessly search, explore, and stream from YouTube Music with instant playback.
+• Hybrid Universal Queue: Mix your local tracks and online streaming songs in the same seamless playback queue.
+• Resilient Playlists: Create and manage custom playlists with instantaneous drag-to-reorder.
+• Smart History & Stats: Pure SQL-powered Recently Played, Most Played, and Recently Added views without bloated cache tables.
+• Full-Permutation Shuffle: Gapless position restore, persistent queue across process death, and audio focus ducking.
+• Privacy-Centric Architecture: Zero telemetry, zero analytics tracking, and no compulsory user account login.
+• Premium Modern Design: Fast, fluid Jetpack Compose interface with dark-mode aesthetic and edge-to-edge support.
+• Full Media3 Engine: ExoPlayer foreground service, lockscreen media controls, and audio routing.
 ```
 
 ---
 
 ## Google Play Data Safety Declarations
 
-| Question | Declaration | Notes |
+| Category / Field | Declaration | Notes |
 |:---|:---|:---|
-| **Data Collection** | **No** | App does not collect any user data. |
-| **Data Sharing** | **No** | App does not share data with any third parties. |
-| **Network Access** | **None** | App does not declare `INTERNET` permission. |
-| **Security Practices** | **Local Storage Only** | All data (playlists, preferences) is stored locally on the user's device in SQLite. |
-| **Account Creation** | **Not Required** | App functions immediately without any login or account creation. |
+| **Data Collection** | **Yes (Ephemeral Activity)** | Search queries are sent ephemerally to YouTube endpoints to fetch search results & streams. No search history is collected by Kaon. |
+| **Data Sharing** | **No** | No user data is sold or shared with analytics or advertising networks. |
+| **Network Access** | **Required for Streaming** | Uses `INTERNET` and `ACCESS_NETWORK_STATE` strictly for online search & streaming. |
+| **Security Practices** | **Local Storage & HTTPS** | Local metadata is kept in on-device SQLite. Network requests use TLS/HTTPS encryption. |
+| **Account Creation** | **Optional / None** | App is fully usable without any account or sign-in. |
 
 ---
 

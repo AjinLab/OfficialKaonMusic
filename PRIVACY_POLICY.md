@@ -1,51 +1,45 @@
 # Privacy Policy for Kaon Music
 
-**Last Updated:** August 23, 2026
+**Last Updated:** August 25, 2026
 
-Kaon Music is built from the ground up as a **100% offline, privacy-first local audio player**. Your privacy is not merely a policy—it is an architectural guarantee enforced by our code.
-
----
-
-## 1. Zero Network Access (No `INTERNET` Permission)
-
-Kaon Music does **not** declare or request the `android.permission.INTERNET` permission in its Android Manifest. 
-
-Because the application has zero network capabilities at the operating system level, it is physically impossible for the app to transmit your audio files, playlists, playback statistics, or metadata to any external server, cloud provider, or third party.
+Kaon Music is a privacy-conscious hybrid music player designed for seamless local playback and optional online YouTube Music streaming.
 
 ---
 
-## 2. Information We Access & Why
+## 1. Network Usage & Online Streaming
 
-Kaon Music operates entirely on local device storage:
+Kaon Music connects to the internet strictly when you perform online features (such as searching YouTube Music, discovering online tracks, or streaming online audio):
 
-* **Audio Files & Media Library**:
-  * **On Android 13+ (API 33+)**: The app requests `READ_MEDIA_AUDIO` to scan and index local audio tracks on your device.
-  * **On Android 8.0–12 (API 26–32)**: The app requests `READ_EXTERNAL_STORAGE` strictly to discover audio tracks and display album artwork.
-* **Playback Notifications**:
-  * **On Android 13+ (API 33+)**: The app requests `POST_NOTIFICATIONS` solely to display the media playback notification with interactive controls.
-* **Wake Lock**:
-  * Used to maintain uninterrupted audio playback while your screen is off.
+* **YouTube Music Search & Streaming**: When searching or streaming from YouTube Music, search terms, selected video IDs, and stream playback requests are transmitted directly to YouTube's public endpoints (via the open-source InnerTube API).
+* **No Account Required**: The app operates anonymously by default and does not require you to provide a Google or YouTube account.
+* **No Tracking or Telemetry**: We do not log, collect, track, or share your search queries, playback history, or listening habits on any remote servers.
 
 ---
 
-## 3. Data Storage & Retention
+## 2. Local Device Data & Storage
 
-* All playlists, favorites, play event counts, and cached metadata are stored locally in an on-device SQLite database (`kaon_music.db`).
-* Data remains on your device and is never uploaded, synced, or shared externally.
-* Deleting the app or clearing its application data immediately deletes all locally saved playlists, preferences, and play statistics.
-
----
-
-## 4. Third-Party Services & Telemetry
-
-* **Zero Analytics**: No Google Analytics, Mixpanel, or telemetry SDKs are included in the app.
-* **Zero Crash Reporting SDKs**: No cloud-based crash reporters (such as Firebase Crashlytics or Sentry) are bundled.
-* **Zero Advertising**: The application contains no ads, tracking pixels, or marketing libraries.
+* **Local Audio Files**: The app requests media storage permissions (`READ_MEDIA_AUDIO` on Android 13+, `READ_EXTERNAL_STORAGE` on Android 8–12) strictly to index and play audio files residing on your local device.
+* **Local Database**: All playlists, favorites, play history, and cached metadata are stored exclusively on your device in a local SQLite database (`kaon_music.db`).
+* **Zero Cloud Syncing of Personal Files**: Your local audio files and personal database never leave your device.
 
 ---
 
-## 5. Contact & Source Code Verification
+## 3. Terms of Service & Streaming Notice
 
-Kaon Music is open and transparent. You can inspect the source code, verify dependencies, and review the Android Manifest permissions directly in our repository.
+* YouTube streaming is provided for personal, non-commercial use.
+* Kaon Music is an independent open-source player and is not affiliated with, endorsed by, or sponsored by YouTube or Google LLC.
+* Online audio streams are played live without unauthorized permanent downloading or offline caching.
 
-For questions or feedback, open an issue on our GitHub project page or contact the project maintainers.
+---
+
+## 4. Third-Party Services & Analytics
+
+* **Zero Analytics**: No third-party tracking, profiling, or telemetry SDKs are included.
+* **Zero Advertising**: The application contains no ads or advertising identifiers.
+
+---
+
+## 5. Contact & Open Source Verification
+
+Kaon Music is open and transparent. The source code, network clients, and permission declarations can be verified at any time on our GitHub repository.
+
