@@ -24,6 +24,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Clear
+import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Search
@@ -313,6 +314,37 @@ fun SearchScreen(
                     }
                 }
 
+                // Offline Notice Banner
+                if (!uiState.isOnline) {
+                    item {
+                        Surface(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 20.dp, vertical = 6.dp),
+                            shape = RoundedCornerShape(8.dp),
+                            color = KaonSurfaceElevated
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.CloudOff,
+                                    contentDescription = null,
+                                    tint = KaonTextTertiary,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = "Offline Mode • Showing local library results only",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = KaonTextSecondary
+                                )
+                            }
+                        }
+                    }
+                }
+
                 // Online Songs list (YouTube Music)
                 if (uiState.onlineTracks.isNotEmpty()) {
                     item {
@@ -349,7 +381,8 @@ fun SearchScreen(
                             onClick = { viewModel.playTrack(track) },
                             onFavoriteToggle = { viewModel.toggleFavorite(track.id) },
                             onPlayNext = { viewModel.playNext(track) },
-                            onAddToQueue = { viewModel.addToQueue(track) }
+                            onAddToQueue = { viewModel.addToQueue(track) },
+                            isOnline = uiState.isOnline
                         )
                     }
                 }

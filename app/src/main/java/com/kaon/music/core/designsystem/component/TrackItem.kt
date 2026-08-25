@@ -49,17 +49,19 @@ fun TrackItem(
     onPlayNext: (() -> Unit)? = null,
     onAddToQueue: (() -> Unit)? = null,
     onAddToPlaylist: (() -> Unit)? = null,
+    isOnline: Boolean = true,
     modifier: Modifier = Modifier
 ) {
+    val isItemDisabled = track.source == "YOUTUBE" && !isOnline
     val titleColor by animateColorAsState(
-        targetValue = if (isCurrent) KaonPrimary else KaonTextPrimary,
+        targetValue = if (isCurrent) KaonPrimary else if (isItemDisabled) KaonTextTertiary else KaonTextPrimary,
         label = "TitleColor"
     )
 
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            .clickable(enabled = !isItemDisabled, onClick = onClick)
             .padding(horizontal = 16.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -87,9 +89,9 @@ fun TrackItem(
             )
 
             Text(
-                text = "${track.displayArtist} • ${track.displayAlbum}",
+                text = if (isItemDisabled) "${track.displayArtist} • Requires internet" else "${track.displayArtist} • ${track.displayAlbum}",
                 style = MaterialTheme.typography.bodyMedium,
-                color = KaonTextSecondary,
+                color = if (isItemDisabled) KaonTextTertiary else KaonTextSecondary,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )

@@ -44,6 +44,7 @@ data class SearchUiState(
     val onlineAlbums: List<Album> = emptyList(),
     val onlineArtists: List<Artist> = emptyList(),
     val isSearchingOnline: Boolean = false,
+    val isOnline: Boolean = true,
     val genres: List<GenreItem> = emptyList(),
     val activeTrackId: Long? = null,
     val isPlaying: Boolean = false
@@ -52,7 +53,8 @@ data class SearchUiState(
 @OptIn(FlowPreview::class)
 class SearchViewModel(
     private val trackRepository: TrackRepository,
-    private val playbackFacade: PlaybackFacade
+    private val playbackFacade: PlaybackFacade,
+    private val networkConnectivityMonitor: com.kaon.music.core.network.NetworkConnectivityMonitor? = null
 ) : ViewModel() {
 
     private val _searchQuery = MutableStateFlow("")
@@ -76,6 +78,8 @@ class SearchViewModel(
         GenreItem("Classical", GenreClassicalBrush)
     )
 
+    private val isOnlineFlow = networkConnectivityMonitor?.isOnline ?: MutableStateFlow(true)
+
     init {
         viewModelScope.launch {
             _searchQuery
@@ -96,7 +100,8 @@ class SearchViewModel(
         _onlineAlbums,
         _onlineArtists,
         _isSearchingOnline,
-        playbackFacade.playbackState
+        playbackFacade.playbackState,
+        isOnlineFlow
     ) { args ->
         val query = args[0] as String
         @Suppress("UNCHECKED_CAST")
@@ -113,6 +118,7 @@ class SearchViewModel(
         val onlineArtists = args[6] as List<Artist>
         val isSearchingOnline = args[7] as Boolean
         val playback = args[8] as PlaybackState
+        val isOnline = args[9] as Boolean
 
         val q = query.trim().lowercase()
         val (tracks, albums, artists) = if (q.isBlank()) {
@@ -138,10 +144,11 @@ class SearchViewModel(
             matchingTracks = tracks,
             matchingAlbums = albums,
             matchingArtists = artists,
-            onlineTracks = onlineTracks,
-            onlineAlbums = onlineAlbums,
-            onlineArtists = onlineArtists,
-            isSearchingOnline = isSearchingOnline,
+            onlineTracks = if (isOnline) onlineTracks else emptyList(),
+            onlineAlbums = if (isOnline) onlineAlbums else emptyList(),
+            onlineArtists = if (isOnline) onlineArtists else emptyList(),
+            isSearchingOnline = isSearchingOnline && isOnline,
+            isOnline = isOnline,
             genres = defaultGenres,
             activeTrackId = playback.currentTrack?.id,
             isPlaying = playback.isPlaying
