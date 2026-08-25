@@ -65,6 +65,7 @@ fun TrackItem(
     ) {
         ArtworkImage(
             albumId = track.albumId,
+            artworkUri = track.contentUri.takeIf { track.source == "YOUTUBE" },
             sizeBucket = SizeBucket.THUMBNAIL,
             modifier = Modifier.size(52.dp),
             cornerRadius = 8.dp

@@ -58,6 +58,10 @@ import com.kaon.music.core.designsystem.theme.KaonTextSecondary
 import com.kaon.music.core.designsystem.theme.KaonTextTertiary
 import com.kaon.music.feature.search.component.GenreCard
 
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material.icons.filled.Cloud
+import androidx.compose.material.icons.filled.CloudQueue
+
 @Composable
 fun SearchScreen(
     viewModel: SearchViewModel,
@@ -107,7 +111,7 @@ fun SearchScreen(
             onValueChange = viewModel::onSearchQueryChanged,
             placeholder = {
                 Text(
-                    text = "Artists, songs, or podcasts",
+                    text = "Search local & YouTube Music",
                     color = KaonTextTertiary,
                     style = MaterialTheme.typography.bodyMedium
                 )
@@ -146,7 +150,18 @@ fun SearchScreen(
                 .padding(horizontal = 20.dp)
         )
 
-        Spacer(modifier = Modifier.height(16.dp))
+        if (uiState.isSearchingOnline) {
+            Spacer(modifier = Modifier.height(6.dp))
+            LinearProgressIndicator(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp),
+                color = KaonPrimary,
+                trackColor = KaonSurfaceElevated
+            )
+        } else {
+            Spacer(modifier = Modifier.height(16.dp))
+        }
 
         if (uiState.searchQuery.isBlank()) {
             // Browse All Genres Grid
@@ -173,11 +188,14 @@ fun SearchScreen(
             }
         } else {
             // Live Search Results
+            val hasLocalResults = uiState.matchingTracks.isNotEmpty() || uiState.matchingAlbums.isNotEmpty() || uiState.matchingArtists.isNotEmpty()
+            val hasOnlineResults = uiState.onlineTracks.isNotEmpty() || uiState.onlineAlbums.isNotEmpty() || uiState.onlineArtists.isNotEmpty()
+
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(bottom = 16.dp)
             ) {
-                // Artists row
+                // Local Artists row
                 if (uiState.matchingArtists.isNotEmpty()) {
                     item {
                         Text(
@@ -226,7 +244,7 @@ fun SearchScreen(
                     }
                 }
 
-                // Albums row
+                // Local Albums row
                 if (uiState.matchingAlbums.isNotEmpty()) {
                     item {
                         Text(
@@ -268,11 +286,11 @@ fun SearchScreen(
                     }
                 }
 
-                // Songs list
+                // Local Songs list
                 if (uiState.matchingTracks.isNotEmpty()) {
                     item {
                         Text(
-                            text = "Songs",
+                            text = "Local Library Songs",
                             style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
                             color = KaonTextPrimary,
                             modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)
@@ -281,7 +299,7 @@ fun SearchScreen(
 
                     itemsIndexed(
                         items = uiState.matchingTracks,
-                        key = { _, track -> track.id }
+                        key = { _, track -> "local_${track.id}" }
                     ) { _, track ->
                         TrackItem(
                             track = track,
@@ -293,7 +311,50 @@ fun SearchScreen(
                             onAddToQueue = { viewModel.addToQueue(track) }
                         )
                     }
-                } else if (uiState.matchingArtists.isEmpty() && uiState.matchingAlbums.isEmpty()) {
+                }
+
+                // Online Songs list (YouTube Music)
+                if (uiState.onlineTracks.isNotEmpty()) {
+                    item {
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 20.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.CloudQueue,
+                                contentDescription = null,
+                                tint = KaonPrimary,
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Text(
+                                text = "YouTube Music Online",
+                                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                                color = KaonTextPrimary
+                            )
+                        }
+                    }
+
+                    itemsIndexed(
+                        items = uiState.onlineTracks,
+                        key = { _, track -> "yt_${track.youtubeVideoId ?: track.id}" }
+                    ) { _, track ->
+                        TrackItem(
+                            track = track,
+                            isPlaying = uiState.isPlaying,
+                            isCurrent = track.id == uiState.activeTrackId,
+                            onClick = { viewModel.playTrack(track) },
+                            onFavoriteToggle = { viewModel.toggleFavorite(track.id) },
+                            onPlayNext = { viewModel.playNext(track) },
+                            onAddToQueue = { viewModel.addToQueue(track) }
+                        )
+                    }
+                }
+
+                if (!hasLocalResults && !hasOnlineResults && !uiState.isSearchingOnline) {
                     item {
                         Column(
                             modifier = Modifier

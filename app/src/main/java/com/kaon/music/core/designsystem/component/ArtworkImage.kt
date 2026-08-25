@@ -31,18 +31,21 @@ import com.kaon.music.core.designsystem.theme.KaonTrackPlaceholder
 fun ArtworkImage(
     albumId: Long,
     modifier: Modifier = Modifier,
+    artworkUri: Uri? = null,
     sizeBucket: SizeBucket = SizeBucket.THUMBNAIL,
     cornerRadius: Dp = 8.dp
 ) {
     val context = LocalContext.current
-    val imageModel: Any? = if (albumId > 0) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            ContentUris.withAppendedId(MediaStore.Audio.Albums.EXTERNAL_CONTENT_URI, albumId)
-        } else {
-            ContentUris.withAppendedId(Uri.parse("content://media/external/audio/albumart"), albumId)
+    val imageModel: Any? = when {
+        artworkUri != null -> artworkUri
+        albumId > 0 -> {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                ContentUris.withAppendedId(MediaStore.Audio.Albums.EXTERNAL_CONTENT_URI, albumId)
+            } else {
+                ContentUris.withAppendedId(Uri.parse("content://media/external/audio/albumart"), albumId)
+            }
         }
-    } else {
-        null
+        else -> null
     }
 
     Box(
