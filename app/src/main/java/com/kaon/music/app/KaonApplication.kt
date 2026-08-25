@@ -17,5 +17,8 @@ class KaonApplication : Application() {
 
         // 2. Initialize application dependency container
         container = AppContainer(this)
+
+        // 3. Initialize YouTube Cipher deobfuscator
+        com.kaon.music.core.online.cipher.CipherDeobfuscator.initialize(this)
     }
 }
