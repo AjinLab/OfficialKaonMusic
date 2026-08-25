@@ -130,9 +130,9 @@ object YouTubeStreamResolver {
                             clientName = playbackData.streamClient,
                             expiresInSeconds = playbackData.streamExpiresInSeconds
                         )
-                        val expiryMs = (playbackData.streamExpiresInSeconds.toLong() * 1000L).coerceAtLeast(CACHE_TTL_MS)
-                        streamCache[trimmedId] = CachedStream(resolved, now + expiryMs)
-                        Timber.tag("StreamResolver").d("Resolved stream via Metrolist YTPlayerUtils for $trimmedId (client=${resolved.clientName}, headers=${resolved.headers.keys})")
+                        val expiryTimestampMs = calculateExpiryTimestampMs(playbackData.streamUrl, playbackData.streamExpiresInSeconds)
+                        streamCache[trimmedId] = CachedStream(resolved, expiryTimestampMs)
+                        Timber.tag("StreamResolver").d("Resolved stream via Metrolist YTPlayerUtils for $trimmedId (client=${resolved.clientName}, ttl=${(expiryTimestampMs - now)/1000}s)")
                         return@withTimeout Result.success(resolved)
                     }
                 }
@@ -160,9 +160,10 @@ object YouTubeStreamResolver {
                                         "Origin" to "https://www.youtube.com"
                                     ),
                                     clientName = client.clientName,
-                                    expiresInSeconds = 300
+                                    expiresInSeconds = response.streamingData?.expiresInSeconds ?: 300
                                 )
-                                streamCache[trimmedId] = CachedStream(resolved, now + CACHE_TTL_MS)
+                                val expiryTimestampMs = calculateExpiryTimestampMs(streamUrl, resolved.expiresInSeconds)
+                                streamCache[trimmedId] = CachedStream(resolved, expiryTimestampMs)
                                 return@withTimeout Result.success(resolved)
                             }
                         }
@@ -242,5 +243,23 @@ object YouTubeStreamResolver {
         }
 
         return null
+    }
+
+    private fun calculateExpiryTimestampMs(streamUrl: String, fallbackExpiresInSeconds: Int): Long {
+        val now = System.currentTimeMillis()
+        try {
+            val uri = android.net.Uri.parse(streamUrl)
+            val expireParam = uri.getQueryParameter("expire")?.toLongOrNull()
+            if (expireParam != null && expireParam > 0) {
+                val expireEpochMs = expireParam * 1000L
+                if (expireEpochMs > now + 60_000L) {
+                    return expireEpochMs - 60_000L // 1-minute safety buffer before CDN expiry
+                }
+            }
+        } catch (e: Exception) {
+            Timber.tag("StreamResolver").w("Failed to parse expire param from URL: ${e.message}")
+        }
+        val fallbackMs = (fallbackExpiresInSeconds.toLong() * 1000L).coerceAtLeast(CACHE_TTL_MS)
+        return now + fallbackMs
     }
 }

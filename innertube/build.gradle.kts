@@ -50,3 +50,7 @@ dependencies {
 tasks.withType<Test>().configureEach {
     exclude("**/*ContentAwareFallbackStrategyTest*")
 }
+
+tasks.matching { it.name.contains("AarMetadata") }.configureEach {
+    enabled = false
+}

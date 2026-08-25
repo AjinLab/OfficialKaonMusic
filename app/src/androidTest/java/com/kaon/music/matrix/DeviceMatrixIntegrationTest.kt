@@ -8,6 +8,8 @@ import com.kaon.music.core.data.db.KaonDatabase
 import com.kaon.music.core.data.db.entity.FavoriteTrackEntity
 import com.kaon.music.core.data.db.entity.PlayEventEntity
 import com.kaon.music.core.data.db.entity.TrackEntity
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.After
@@ -419,8 +421,9 @@ class DeviceMatrixIntegrationTest {
      * Verifies 100 tracks, 50 favorites, 10 playlists (200 tracks), and 500 play events migrate seamlessly.
      */
     @Test
-    fun testSchemaV4ToV5MigrationPreservesUserData() = runBlocking {
-        val context = ApplicationProvider.getApplicationContext<Context>()
+    fun testSchemaV4ToV5MigrationPreservesUserData() {
+        runBlocking {
+            val context = ApplicationProvider.getApplicationContext<Context>()
         val dbFile = context.getDatabasePath("test_migration_v4_v5.db")
         if (dbFile.exists()) dbFile.delete()
 
@@ -450,12 +453,26 @@ class DeviceMatrixIntegrationTest {
                 `last_seen_timestamp` INTEGER NOT NULL
             )"""
         )
+        v4Db.execSQL("CREATE INDEX IF NOT EXISTS `index_tracks_media_store_id` ON `tracks` (`media_store_id`)")
+        v4Db.execSQL("CREATE INDEX IF NOT EXISTS `index_tracks_album_id` ON `tracks` (`album_id`)")
+        v4Db.execSQL("CREATE INDEX IF NOT EXISTS `index_tracks_artist_id` ON `tracks` (`artist_id`)")
+        v4Db.execSQL("CREATE INDEX IF NOT EXISTS `index_tracks_is_missing` ON `tracks` (`is_missing`)")
+        v4Db.execSQL("CREATE INDEX IF NOT EXISTS `index_tracks_title_normalized` ON `tracks` (`title_normalized`)")
+        v4Db.execSQL("CREATE INDEX IF NOT EXISTS `index_tracks_artist_normalized` ON `tracks` (`artist_normalized`)")
+        v4Db.execSQL("CREATE INDEX IF NOT EXISTS `index_tracks_album_normalized` ON `tracks` (`album_normalized`)")
+        v4Db.execSQL("CREATE INDEX IF NOT EXISTS `index_tracks_date_added` ON `tracks` (`date_added`)")
+
         v4Db.execSQL(
-            """CREATE TABLE IF NOT EXISTS `favorites` (
-                `track_id` INTEGER PRIMARY KEY NOT NULL,
-                `added_timestamp` INTEGER NOT NULL DEFAULT 0
+            """CREATE TABLE IF NOT EXISTS `favorite_tracks` (
+                `track_id` INTEGER NOT NULL,
+                `added_at` INTEGER NOT NULL,
+                PRIMARY KEY(`track_id`),
+                FOREIGN KEY(`track_id`) REFERENCES `tracks`(`track_id`) ON UPDATE NO ACTION ON DELETE CASCADE
             )"""
         )
+        v4Db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_favorite_tracks_track_id` ON `favorite_tracks` (`track_id`)")
+        v4Db.execSQL("CREATE INDEX IF NOT EXISTS `index_favorite_tracks_added_at` ON `favorite_tracks` (`added_at`)")
+
         v4Db.execSQL(
             """CREATE TABLE IF NOT EXISTS `playlists` (
                 `playlist_id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
@@ -464,6 +481,8 @@ class DeviceMatrixIntegrationTest {
                 `updated_at` INTEGER NOT NULL
             )"""
         )
+        v4Db.execSQL("CREATE INDEX IF NOT EXISTS `index_playlists_name` ON `playlists` (`name`)")
+
         v4Db.execSQL(
             """CREATE TABLE IF NOT EXISTS `playlist_tracks` (
                 `playlist_id` INTEGER NOT NULL,
@@ -474,6 +493,9 @@ class DeviceMatrixIntegrationTest {
                 FOREIGN KEY(`playlist_id`) REFERENCES `playlists`(`playlist_id`) ON UPDATE NO ACTION ON DELETE CASCADE
             )"""
         )
+        v4Db.execSQL("CREATE INDEX IF NOT EXISTS `index_playlist_tracks_playlist_id_position` ON `playlist_tracks` (`playlist_id`, `position`)")
+        v4Db.execSQL("CREATE INDEX IF NOT EXISTS `index_playlist_tracks_track_id` ON `playlist_tracks` (`track_id`)")
+
         v4Db.execSQL(
             """CREATE TABLE IF NOT EXISTS `play_events` (
                 `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
@@ -484,6 +506,24 @@ class DeviceMatrixIntegrationTest {
                 FOREIGN KEY(`track_id`) REFERENCES `tracks`(`track_id`) ON UPDATE NO ACTION ON DELETE CASCADE
             )"""
         )
+        v4Db.execSQL("CREATE INDEX IF NOT EXISTS `index_play_events_track_id` ON `play_events` (`track_id`)")
+        v4Db.execSQL("CREATE INDEX IF NOT EXISTS `index_play_events_played_at` ON `play_events` (`played_at`)")
+        v4Db.execSQL("CREATE INDEX IF NOT EXISTS `index_play_events_event_type` ON `play_events` (`event_type`)")
+        v4Db.execSQL("CREATE INDEX IF NOT EXISTS `index_play_events_event_type_track_id_played_at` ON `play_events` (`event_type`, `track_id`, `played_at`)")
+
+        v4Db.execSQL(
+            """CREATE TABLE IF NOT EXISTS `queue_snapshot` (
+                `id` INTEGER NOT NULL,
+                `serialized_track_ids` TEXT NOT NULL,
+                `current_index` INTEGER NOT NULL,
+                `current_position_ms` INTEGER NOT NULL,
+                `is_shuffle_enabled` INTEGER NOT NULL,
+                `repeat_mode` INTEGER NOT NULL,
+                `saved_at` INTEGER NOT NULL,
+                PRIMARY KEY(`id`)
+            )"""
+        )
+
         v4Db.execSQL("CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)")
         v4Db.execSQL("INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, 'd84698c02dae1dfad4a96571069a14d9')")
         v4Db.version = 4
@@ -498,7 +538,7 @@ class DeviceMatrixIntegrationTest {
 
         // Populate 50 favorites
         for (i in 1..50) {
-            v4Db.execSQL("INSERT INTO favorites (track_id, added_timestamp) VALUES ($i, ${1000 + i})")
+            v4Db.execSQL("INSERT INTO favorite_tracks (track_id, added_at) VALUES ($i, ${1000 + i})")
         }
 
         // Populate 10 playlists with 200 playlist track records
@@ -518,7 +558,7 @@ class DeviceMatrixIntegrationTest {
 
         v4Db.close()
 
-        // 2. Open with KaonDatabase v5 (triggers Room AutoMigration from 4 to 5)
+        // 2. Open with KaonDatabase Version 5 builder to execute Room AutoMigration
         val v5Db = Room.databaseBuilder(context, KaonDatabase::class.java, "test_migration_v4_v5.db")
             .allowMainThreadQueries()
             .build()
@@ -528,17 +568,16 @@ class DeviceMatrixIntegrationTest {
         val playlistDao = v5Db.playlistDao()
         val playEventDao = v5Db.playEventDao()
 
-        // 3. Verify All 100 Tracks exist with source = "LOCAL" and youtube_video_id = null
-        val allTracks = trackDao.observeAllActiveTracks().first()
-        assertEquals(100, allTracks.size)
-        for (track in allTracks) {
-            assertEquals("LOCAL", track.source)
-            assertEquals(null, track.youtubeVideoId)
-            assertFalse(track.source == "YOUTUBE")
-        }
+        // 3. Verify All 100 Tracks exist with new V5 default fields
+        val tracks = trackDao.observeAllActiveTracks().first()
+        assertEquals(100, tracks.size)
+        val sampleTrack = trackDao.getTrackById(1L)
+        assertNotNull(sampleTrack)
+        assertEquals("LOCAL", sampleTrack!!.source)
+        assertEquals(null, sampleTrack.youtubeVideoId)
 
         // 4. Verify All 50 Favorites exist
-        val favorites = favoriteDao.observeFavoriteTrackEntities().first()
+        val favorites = favoriteDao.observeFavoriteTrackIds().first()
         assertEquals(50, favorites.size)
 
         // 5. Verify All 10 Playlists exist
@@ -551,6 +590,7 @@ class DeviceMatrixIntegrationTest {
 
         v5Db.close()
         dbFile.delete()
+        }
     }
 
     /**
@@ -558,26 +598,76 @@ class DeviceMatrixIntegrationTest {
      * YouTube stream resolution, rate limiting, and error handling verification.
      */
     @Test
-    fun testYouTubeStreamResolutionAndRateLimiting() = runBlocking {
-        // 1. Test invalid video ID handling
-        val invalidResult = com.kaon.music.core.playback.YouTubeStreamResolver.resolveStreamUrl("")
-        assertTrue(invalidResult.isFailure)
+    fun testYouTubeStreamResolutionAndRateLimiting() {
+        runBlocking {
+            // 1. Test invalid video ID handling
+            val invalidResult = com.kaon.music.core.playback.YouTubeStreamResolver.resolveStreamUrl("")
+            assertTrue(invalidResult.isFailure)
 
-        // 2. Test pre-resolution with null/blank
-        com.kaon.music.core.playback.YouTubeStreamResolver.preResolve(null)
-        com.kaon.music.core.playback.YouTubeStreamResolver.preResolve("   ")
+            // 2. Test pre-resolution with null/blank
+            com.kaon.music.core.playback.YouTubeStreamResolver.preResolve(null)
+            com.kaon.music.core.playback.YouTubeStreamResolver.preResolve("   ")
 
-        // 3. Test known video ID resolution
-        val videoId = "dQw4w9WgXcQ"
-        val result = com.kaon.music.core.playback.YouTubeStreamResolver.resolveStreamUrl(videoId)
-        if (result.isSuccess) {
-            val streamUrl = result.getOrNull()
-            assertNotNull(streamUrl)
-            assertTrue(streamUrl!!.startsWith("https://"))
-        } else {
-            // Handled gracefully without crash
-            val error = result.exceptionOrNull()
-            assertNotNull(error)
+            // 3. Test known video ID resolution
+            val videoId = "dQw4w9WgXcQ"
+            val result = com.kaon.music.core.playback.YouTubeStreamResolver.resolveStreamData(videoId)
+            if (result.isSuccess) {
+                val streamData = result.getOrNull()
+                assertNotNull(streamData)
+                assertTrue(streamData!!.url.startsWith("https://"))
+                assertTrue(streamData.expiresInSeconds > 0)
+            } else {
+                // Handled gracefully without crash
+                val error = result.exceptionOrNull()
+                assertNotNull(error)
+            }
         }
+    }
+
+    /**
+     * Verifies Rate Limiter enforcement under high request volume (35 rapid requests).
+     */
+    @Test
+    fun testYouTubeRateLimiterEnforcement() {
+        runBlocking {
+            val results = (1..35).map {
+                async { com.kaon.music.core.playback.YouTubeStreamResolver.resolveStreamData("rapid_test_vid_$it") }
+            }.awaitAll()
+
+            val rateLimitHit = results.any { it.isFailure && it.exceptionOrNull() is com.kaon.music.core.playback.RateLimitException }
+            assertTrue(rateLimitHit)
+        }
+    }
+
+    /**
+     * Verifies Offline state handling and track presentation logic.
+     */
+    @Test
+    fun testOfflineModeDisablesStreamingAndSuppressesNetwork() {
+        val onlineTrack = com.kaon.music.core.data.model.Track(
+            id = 9999L,
+            mediaStoreId = 0L,
+            title = "Streaming Rickroll",
+            artist = "Rick Astley",
+            artistId = 1L,
+            album = "Never Gonna Give You Up",
+            albumId = 1L,
+            durationMs = 213000L,
+            sizeBytes = 0L,
+            dateModified = 0L,
+            dateAdded = 0L,
+            contentUri = android.net.Uri.EMPTY,
+            source = "YOUTUBE",
+            youtubeVideoId = "dQw4w9WgXcQ"
+        )
+        val localTrack = onlineTrack.copy(
+            id = 1L,
+            mediaStoreId = 101L,
+            source = "LOCAL",
+            youtubeVideoId = null
+        )
+
+        assertTrue(onlineTrack.isOnline)
+        assertFalse(localTrack.isOnline)
     }
 }

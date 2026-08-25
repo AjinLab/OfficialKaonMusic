@@ -136,6 +136,7 @@ class PlaybackFacade(
                             playbackPositionMs = player.currentPosition.coerceAtLeast(0L)
                         )
                     }
+                    triggerNextTracksPreResolution(_playbackState.value.queue, player.currentMediaItemIndex)
                 }
             }
 
@@ -305,7 +306,7 @@ class PlaybackFacade(
             controller.prepare()
             controller.play()
         }
-        triggerNextTrackPreResolution(queue, targetIndex)
+        triggerNextTracksPreResolution(queue, targetIndex)
     }
 
     fun playQueue(queue: List<Track>, startIndex: Int = 0) {
@@ -318,16 +319,21 @@ class PlaybackFacade(
         controller.setMediaItems(mediaItems, index, 0L)
         controller.prepare()
         controller.play()
-        triggerNextTrackPreResolution(queue, index)
+        triggerNextTracksPreResolution(queue, index)
     }
 
-    private fun triggerNextTrackPreResolution(queue: List<Track>, currentIndex: Int) {
-        val nextIndex = currentIndex + 1
-        if (nextIndex in queue.indices) {
-            val nextTrack = queue[nextIndex]
-            if (nextTrack.source == "YOUTUBE" && !nextTrack.youtubeVideoId.isNullOrBlank()) {
-                facadeScope.launch {
-                    YouTubeStreamResolver.preResolve(nextTrack.youtubeVideoId)
+    private var preResolutionJob: kotlinx.coroutines.Job? = null
+
+    private fun triggerNextTracksPreResolution(queue: List<Track>, currentIndex: Int) {
+        preResolutionJob?.cancel()
+        preResolutionJob = facadeScope.launch {
+            for (offset in 1..2) {
+                val targetIndex = currentIndex + offset
+                if (targetIndex in queue.indices) {
+                    val nextTrack = queue[targetIndex]
+                    if (nextTrack.source == "YOUTUBE" && !nextTrack.youtubeVideoId.isNullOrBlank()) {
+                        YouTubeStreamResolver.preResolve(nextTrack.youtubeVideoId)
+                    }
                 }
             }
         }
