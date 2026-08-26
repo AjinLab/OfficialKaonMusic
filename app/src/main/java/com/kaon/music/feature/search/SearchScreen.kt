@@ -57,11 +57,24 @@ import com.kaon.music.core.designsystem.theme.KaonSurfaceElevated
 import com.kaon.music.core.designsystem.theme.KaonTextPrimary
 import com.kaon.music.core.designsystem.theme.KaonTextSecondary
 import com.kaon.music.core.designsystem.theme.KaonTextTertiary
-import com.kaon.music.feature.search.component.GenreCard
-
+import android.content.Intent
+import android.speech.RecognizerIntent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.TextButton
 import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.CloudQueue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.LocalContext
+import com.kaon.music.core.data.model.Track
+import com.kaon.music.feature.library.playlist.AddToPlaylistBottomSheet
+import com.kaon.music.feature.search.component.GenreCard
 
 @Composable
 fun SearchScreen(
@@ -72,6 +85,26 @@ fun SearchScreen(
     modifier: Modifier = Modifier
 ) {
     val uiState by viewModel.uiState.collectAsState()
+    val playlists by viewModel.playlists.collectAsState()
+    val context = LocalContext.current
+
+    val isVoiceSearchAvailable = remember {
+        val speechIntent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
+        speechIntent.resolveActivity(context.packageManager) != null
+    }
+
+    val voiceSearchLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val matches = result.data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
+        if (!matches.isNullOrEmpty()) {
+            viewModel.onSearchQueryChanged(matches[0])
+        }
+    }
+
+    var trackForAddToPlaylist by remember { mutableStateOf<Track?>(null) }
+    var showCreatePlaylistDialog by remember { mutableStateOf(false) }
+    var newPlaylistName by remember { mutableStateOf("") }
 
     Column(
         modifier = modifier
@@ -96,13 +129,28 @@ fun SearchScreen(
                 color = KaonTextPrimary
             )
 
-            IconButton(onClick = { /* Voice search trigger */ }) {
-                Icon(
-                    imageVector = Icons.Default.Mic,
-                    contentDescription = "Voice Search",
-                    tint = KaonTextPrimary,
-                    modifier = Modifier.size(24.dp)
-                )
+            if (isVoiceSearchAvailable) {
+                IconButton(onClick = {
+                    try {
+                        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                            putExtra(
+                                RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+                                RecognizerIntent.LANGUAGE_MODEL_FREE_FORM
+                            )
+                            putExtra(RecognizerIntent.EXTRA_PROMPT, "Search songs, albums, artists...")
+                        }
+                        voiceSearchLauncher.launch(intent)
+                    } catch (e: Exception) {
+                        timber.log.Timber.w(e, "Voice search activity unavailable")
+                    }
+                }) {
+                    Icon(
+                        imageVector = Icons.Default.Mic,
+                        contentDescription = "Voice Search",
+                        tint = KaonTextPrimary,
+                        modifier = Modifier.size(24.dp)
+                    )
+                }
             }
         }
 
@@ -309,7 +357,8 @@ fun SearchScreen(
                             onClick = { viewModel.playTrack(track) },
                             onFavoriteToggle = { viewModel.toggleFavorite(track.id) },
                             onPlayNext = { viewModel.playNext(track) },
-                            onAddToQueue = { viewModel.addToQueue(track) }
+                            onAddToQueue = { viewModel.addToQueue(track) },
+                            onAddToPlaylist = { trackForAddToPlaylist = track }
                         )
                     }
                 }
@@ -382,6 +431,7 @@ fun SearchScreen(
                             onFavoriteToggle = { viewModel.toggleFavorite(track.id) },
                             onPlayNext = { viewModel.playNext(track) },
                             onAddToQueue = { viewModel.addToQueue(track) },
+                            onAddToPlaylist = { trackForAddToPlaylist = track },
                             isOnline = uiState.isOnline
                         )
                     }
@@ -405,5 +455,63 @@ fun SearchScreen(
                 }
             }
         }
+    }
+
+    if (trackForAddToPlaylist != null) {
+        AddToPlaylistBottomSheet(
+            track = trackForAddToPlaylist!!,
+            playlists = playlists,
+            onDismiss = { trackForAddToPlaylist = null },
+            onSelectPlaylist = { playlist ->
+                trackForAddToPlaylist?.let { viewModel.addTrackToPlaylist(playlist.id, it) }
+                trackForAddToPlaylist = null
+            },
+            onCreateNewPlaylist = {
+                newPlaylistName = ""
+                showCreatePlaylistDialog = true
+            }
+        )
+    }
+
+    if (showCreatePlaylistDialog) {
+        AlertDialog(
+            onDismissRequest = { showCreatePlaylistDialog = false },
+            title = {
+                Text(
+                    text = "New Playlist",
+                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                    color = KaonTextPrimary
+                )
+            },
+            text = {
+                OutlinedTextField(
+                    value = newPlaylistName,
+                    onValueChange = { newPlaylistName = it },
+                    label = { Text("Playlist Name") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        if (newPlaylistName.isNotBlank() && trackForAddToPlaylist != null) {
+                            viewModel.createPlaylistAndAddTrack(newPlaylistName.trim(), trackForAddToPlaylist!!)
+                            trackForAddToPlaylist = null
+                            showCreatePlaylistDialog = false
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = KaonPrimary)
+                ) {
+                    Text("Create")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showCreatePlaylistDialog = false }) {
+                    Text("Cancel")
+                }
+            },
+            containerColor = KaonSurfaceElevated
+        )
     }
 }

@@ -7,6 +7,11 @@ import com.kaon.music.core.data.model.Artist
 import com.kaon.music.core.data.model.Track
 import com.kaon.music.core.data.online.YtItemMapper
 import com.kaon.music.core.data.repository.TrackRepository
+import com.kaon.music.core.data.model.Playlist
+import com.kaon.music.core.data.repository.PlaylistRepository
+import com.kaon.music.core.network.NetworkConnectivityMonitor
+import com.kaon.music.core.network.NetworkMonitor
+import kotlinx.coroutines.flow.flowOf
 import com.kaon.music.core.designsystem.theme.GenreClassicalBrush
 import com.kaon.music.core.designsystem.theme.GenreElectronicBrush
 import com.kaon.music.core.designsystem.theme.GenreHipHopBrush
@@ -54,8 +59,12 @@ data class SearchUiState(
 class SearchViewModel(
     private val trackRepository: TrackRepository,
     private val playbackFacade: PlaybackFacade,
-    private val networkConnectivityMonitor: com.kaon.music.core.network.NetworkConnectivityMonitor? = null
+    private val networkConnectivityMonitor: NetworkMonitor? = null,
+    private val playlistRepository: PlaylistRepository? = null
 ) : ViewModel() {
+
+    val playlists: StateFlow<List<Playlist>> = (playlistRepository?.observeAllPlaylists() ?: flowOf(emptyList()))
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     private val _searchQuery = MutableStateFlow("")
     val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
@@ -79,14 +88,35 @@ class SearchViewModel(
     )
 
     private val isOnlineFlow = networkConnectivityMonitor?.isOnline ?: MutableStateFlow(true)
+    private var currentIsOnline: Boolean = true
 
     init {
+        viewModelScope.launch {
+            isOnlineFlow.collect { online ->
+                currentIsOnline = online
+                if (!online) {
+                    onlineSearchJob?.cancel()
+                    _onlineTracks.value = emptyList()
+                    _onlineAlbums.value = emptyList()
+                    _onlineArtists.value = emptyList()
+                    _isSearchingOnline.value = false
+                }
+            }
+        }
+
         viewModelScope.launch {
             _searchQuery
                 .debounce(400)
                 .distinctUntilChanged()
                 .collect { query ->
-                    performOnlineSearch(query)
+                    if (currentIsOnline) {
+                        performOnlineSearch(query)
+                    } else {
+                        _onlineTracks.value = emptyList()
+                        _onlineAlbums.value = emptyList()
+                        _onlineArtists.value = emptyList()
+                        _isSearchingOnline.value = false
+                    }
                 }
         }
     }
@@ -241,6 +271,21 @@ class SearchViewModel(
     fun toggleFavorite(trackId: Long) {
         viewModelScope.launch {
             trackRepository.toggleFavorite(trackId)
+        }
+    }
+
+    fun addTrackToPlaylist(playlistId: Long, track: Track) {
+        val repo = playlistRepository ?: return
+        viewModelScope.launch {
+            repo.addTrackToPlaylist(playlistId, track.id)
+        }
+    }
+
+    fun createPlaylistAndAddTrack(name: String, track: Track) {
+        val repo = playlistRepository ?: return
+        viewModelScope.launch {
+            val plId = repo.createPlaylist(name)
+            repo.addTrackToPlaylist(plId, track.id)
         }
     }
 }

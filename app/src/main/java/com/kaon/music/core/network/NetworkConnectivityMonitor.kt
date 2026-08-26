@@ -10,15 +10,19 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 
+interface NetworkMonitor {
+    val isOnline: Flow<Boolean>
+}
+
 /**
  * Monitors device network availability for offline/online UX switching.
  */
-class NetworkConnectivityMonitor(private val context: Context) {
+open class NetworkConnectivityMonitor(private val context: Context) : NetworkMonitor {
 
     private val connectivityManager =
         context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
 
-    val isOnline: Flow<Boolean> = callbackFlow {
+    override val isOnline: Flow<Boolean> = callbackFlow {
         val cm = connectivityManager
         if (cm == null) {
             trySend(true)
