@@ -86,11 +86,14 @@ class KaonPlaybackService : MediaSessionService() {
             .setUsage(C.USAGE_MEDIA)
             .build()
 
-        val httpDataSourceFactory = DefaultHttpDataSource.Factory()
-            .setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-            .setConnectTimeoutMs(15000)
-            .setReadTimeoutMs(15000)
-            .setAllowCrossProtocolRedirects(true)
+        val httpDataSourceFactory = androidx.media3.datasource.okhttp.OkHttpDataSource.Factory(
+            okhttp3.OkHttpClient.Builder()
+                .followRedirects(true)
+                .followSslRedirects(true)
+                .connectTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
+                .readTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
+                .build()
+        )
 
         val resolvingDataSourceFactory = ResolvingDataSource.Factory(
             httpDataSourceFactory,
@@ -110,10 +113,12 @@ class KaonPlaybackService : MediaSessionService() {
                                 YouTubeStreamResolver.resolveStreamData(videoId).getOrNull()
                             }
                             if (resolved != null && resolved.url.isNotBlank()) {
+                                val chunkLength = 512 * 1024L
                                 return dataSpec.buildUpon()
                                     .setUri(Uri.parse(resolved.url))
                                     .setHttpRequestHeaders(dataSpec.httpRequestHeaders + resolved.headers)
                                     .build()
+                                    .subrange(dataSpec.uriPositionOffset, chunkLength)
                             }
                         }
                     }
