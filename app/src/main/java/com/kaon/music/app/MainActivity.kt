@@ -73,7 +73,8 @@ class MainActivity : ComponentActivity() {
                 val searchViewModel = remember {
                     SearchViewModel(
                         trackRepository = container.trackRepository,
-                        playbackFacade = container.playbackFacade
+                        playbackFacade = container.playbackFacade,
+                        playlistRepository = container.playlistRepository
                     )
                 }
 
@@ -91,7 +92,8 @@ class MainActivity : ComponentActivity() {
                 val playerViewModel = remember {
                     PlayerViewModel(
                         playbackFacade = container.playbackFacade,
-                        trackRepository = container.trackRepository
+                        trackRepository = container.trackRepository,
+                        playlistRepository = container.playlistRepository
                     ).also {
                         playerViewModelRef = it
                     }
@@ -258,7 +260,8 @@ private fun MainScreenContent(
             onToggleFavorite = playerViewModel::toggleFavorite,
             onRemoveQueueItem = playerViewModel::removeQueueItem,
             onMoveQueueItem = playerViewModel::moveQueueItem,
-            onClearQueue = playerViewModel::clearQueue
+            onClearQueue = playerViewModel::clearQueue,
+            onSaveQueueAsPlaylist = playerViewModel::saveQueueAsPlaylist
         )
     }
 }

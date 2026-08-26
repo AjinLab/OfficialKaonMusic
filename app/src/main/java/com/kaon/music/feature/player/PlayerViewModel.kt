@@ -2,6 +2,7 @@ package com.kaon.music.feature.player
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.kaon.music.core.data.repository.PlaylistRepository
 import com.kaon.music.core.data.repository.TrackRepository
 import com.kaon.music.core.playback.PlaybackFacade
 import com.kaon.music.core.playback.model.PlaybackState
@@ -14,7 +15,8 @@ import kotlinx.coroutines.launch
 
 class PlayerViewModel(
     private val playbackFacade: PlaybackFacade,
-    private val trackRepository: TrackRepository
+    private val trackRepository: TrackRepository,
+    private val playlistRepository: PlaylistRepository? = null
 ) : ViewModel() {
 
     val playbackState: StateFlow<PlaybackState> = playbackFacade.playbackState
@@ -83,6 +85,17 @@ class PlayerViewModel(
     fun toggleFavorite(trackId: Long) {
         viewModelScope.launch {
             trackRepository.toggleFavorite(trackId)
+        }
+    }
+
+    fun saveQueueAsPlaylist(name: String, onComplete: () -> Unit = {}) {
+        val repo = playlistRepository ?: return
+        val currentQueue = playbackFacade.playbackState.value.queue
+        if (currentQueue.isEmpty()) return
+        viewModelScope.launch {
+            val playlistId = repo.createPlaylist(name)
+            repo.addTracksToPlaylist(playlistId, currentQueue.map { it.id })
+            onComplete()
         }
     }
 }

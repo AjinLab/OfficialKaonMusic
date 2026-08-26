@@ -41,7 +41,7 @@ android {
                 propFile.inputStream().use { props.load(it) }
                 val path = props.getProperty("storeFile")
                     ?: throw GradleException("storeFile missing in release-keystore.properties")
-                storeFile = file(path)
+                storeFile = rootProject.file(path)
                 storePassword = props.getProperty("storePassword")
                     ?: throw GradleException("storePassword missing in release-keystore.properties")
                 keyAlias = props.getProperty("keyAlias")

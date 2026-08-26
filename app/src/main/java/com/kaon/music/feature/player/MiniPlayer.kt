@@ -71,6 +71,7 @@ fun MiniPlayer(
             ) {
                 ArtworkImage(
                     albumId = track.albumId,
+                    artworkUri = track.contentUri.takeIf { track.source == "YOUTUBE" },
                     sizeBucket = SizeBucket.THUMBNAIL,
                     modifier = Modifier.size(44.dp),
                     cornerRadius = 8.dp

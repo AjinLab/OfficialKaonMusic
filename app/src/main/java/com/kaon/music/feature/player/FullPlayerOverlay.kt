@@ -1,5 +1,6 @@
 package com.kaon.music.feature.player
 
+import android.content.Intent
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
@@ -26,6 +27,7 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.ArrowUpward
@@ -45,18 +47,21 @@ import androidx.compose.material.icons.outlined.FavoriteBorder
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -103,6 +108,7 @@ fun FullPlayerOverlay(
     onMoveQueueItem: (fromIndex: Int, toIndex: Int) -> Unit = { _, _ -> },
     onRemoveQueueItem: (index: Int) -> Unit = {},
     onClearQueue: () -> Unit = {},
+    onSaveQueueAsPlaylist: (String) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     AnimatedVisibility(
@@ -123,10 +129,13 @@ fun FullPlayerOverlay(
 
         BackHandler(onBack = onCollapse)
 
+        val context = LocalContext.current
         var isSeeking by remember { mutableStateOf(false) }
         var seekPositionFraction by remember { mutableFloatStateOf(0f) }
         var isQueueSheetVisible by remember { mutableStateOf(false) }
         var isInfoDialogVisible by remember { mutableStateOf(false) }
+        var isSavePlaylistDialogVisible by remember { mutableStateOf(false) }
+        var playlistName by remember { mutableStateOf("") }
 
         val duration = playbackState.durationMs.coerceAtLeast(1L)
         val currentPos = if (isSeeking) {
@@ -372,7 +381,10 @@ fun FullPlayerOverlay(
                 horizontalArrangement = Arrangement.SpaceAround,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                IconButton(onClick = { /* Share action */ }) {
+                IconButton(onClick = {
+                    val sendIntent = TrackShareHelper.createShareIntent(currentTrack)
+                    context.startActivity(Intent.createChooser(sendIntent, "Share Track"))
+                }) {
                     Icon(
                         imageVector = Icons.Outlined.Share,
                         contentDescription = "Share",
@@ -468,7 +480,23 @@ fun FullPlayerOverlay(
                             color = KaonTextPrimary
                         )
 
-                        Row {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            TextButton(
+                                onClick = {
+                                    val timeStamp = java.text.SimpleDateFormat("MMM d, HH:mm", java.util.Locale.getDefault()).format(java.util.Date())
+                                    playlistName = "Queue - $timeStamp"
+                                    isSavePlaylistDialogVisible = true
+                                },
+                                colors = ButtonDefaults.textButtonColors(contentColor = KaonPrimary)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Filled.PlaylistAdd,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Save")
+                            }
                             TextButton(
                                 onClick = {
                                     onClearQueue()
@@ -514,6 +542,56 @@ fun FullPlayerOverlay(
                     }
                 }
             }
+        }
+
+        // Save Queue as Playlist Dialog
+        if (isSavePlaylistDialogVisible) {
+            AlertDialog(
+                onDismissRequest = { isSavePlaylistDialogVisible = false },
+                title = {
+                    Text(
+                        text = "Save Queue as Playlist",
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                        color = KaonTextPrimary
+                    )
+                },
+                text = {
+                    Column {
+                        Text(
+                            text = "Save all ${playbackState.queue.size} songs from your current queue into a new playlist.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = KaonTextSecondary
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+                        OutlinedTextField(
+                            value = playlistName,
+                            onValueChange = { playlistName = it },
+                            label = { Text("Playlist Name") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            if (playlistName.isNotBlank()) {
+                                onSaveQueueAsPlaylist(playlistName.trim())
+                                isSavePlaylistDialogVisible = false
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = KaonPrimary)
+                    ) {
+                        Text("Save")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { isSavePlaylistDialogVisible = false }) {
+                        Text("Cancel")
+                    }
+                },
+                containerColor = KaonSurfaceElevated
+            )
         }
     }
 }

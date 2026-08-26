@@ -57,6 +57,11 @@ class PlaybackFacade(
     private val _playbackState = MutableStateFlow(PlaybackState())
     val playbackState: StateFlow<PlaybackState> = _playbackState.asStateFlow()
 
+    @androidx.annotation.VisibleForTesting
+    internal fun updatePlaybackStateForTesting(state: PlaybackState) {
+        _playbackState.value = state
+    }
+
     private val _oneShotEvents = MutableSharedFlow<PlaybackEvent>(extraBufferCapacity = 1)
     val oneShotEvents: SharedFlow<PlaybackEvent> = _oneShotEvents.asSharedFlow()
 
