@@ -1,7 +1,6 @@
 package com.kaon.music.feature.home
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -16,10 +15,9 @@ import androidx.compose.ui.unit.dp
 import com.kaon.music.core.data.model.Album
 import com.kaon.music.core.data.model.Artist
 import com.kaon.music.core.designsystem.theme.KaonBackground
-import com.kaon.music.feature.home.component.CuratedStationsSection
 import com.kaon.music.feature.home.component.HomeHeader
-import com.kaon.music.feature.home.component.MadeForYouSection
 import com.kaon.music.feature.home.component.RecentlyPlayedSection
+import com.kaon.music.feature.home.component.YourMixSection
 
 @Composable
 fun HomeScreen(
@@ -44,10 +42,15 @@ fun HomeScreen(
         }
 
         item {
-            MadeForYouSection(
-                onDiscoverWeeklyClick = viewModel::playDiscoverWeekly,
-                onChillMixClick = viewModel::playChillMix,
-                onWorkoutMixClick = viewModel::playWorkoutMix
+            YourMixSection(
+                yourMixTracks = uiState.yourMixTracks,
+                heavyRotationCount = uiState.heavyRotationTracks.size,
+                recentlyAddedCount = uiState.recentlyAddedTracks.size,
+                favoriteCount = uiState.favoriteTracks.size,
+                onPlayYourMix = viewModel::playYourMix,
+                onPlayHeavyRotation = viewModel::playHeavyRotation,
+                onPlayRecentlyAdded = viewModel::playRecentlyAdded,
+                onPlayFavorites = viewModel::playFavorites
             )
         }
 
@@ -60,15 +63,8 @@ fun HomeScreen(
                 onTrackClick = { track -> viewModel.playTrack(track, uiState.recentTracks) },
                 onAlbumClick = onAlbumClick,
                 onArtistClick = onArtistClick,
-                onSeeAllClick = onSeeAllRecentlyPlayed
-            )
-        }
-
-        item {
-            Spacer(modifier = Modifier.height(24.dp))
-            CuratedStationsSection(
-                stations = uiState.stations,
-                onStationClick = viewModel::playStation
+                onSeeAllClick = onSeeAllRecentlyPlayed,
+                onExploreMusicClick = onSeeAllRecentlyPlayed
             )
         }
     }
