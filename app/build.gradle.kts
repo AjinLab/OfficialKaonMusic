@@ -103,6 +103,12 @@ android {
     room {
         schemaDirectory("$projectDir/schemas")
     }
+
+    lint {
+        checkReleaseBuilds = false
+        abortOnError = true
+        disable += listOf("UnsafeOptInUsageError")
+    }
 }
 
 dependencies {

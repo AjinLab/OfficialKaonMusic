@@ -118,6 +118,7 @@ object YTPlayerUtils {
      * Metadata like audioConfig and videoDetails are from [MAIN_CLIENT].
      * Metadata and stream formats may come from different clients.
      */
+    @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
     suspend fun playerResponseForPlayback(
         videoId: String,
         playlistId: String? = null,

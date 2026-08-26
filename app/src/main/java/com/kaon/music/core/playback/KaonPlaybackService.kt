@@ -67,6 +67,7 @@ class KaonPlaybackService : MediaSessionService() {
     private var trackStartPlayTimestampMs: Long = 0L
     private var hasRecordedCurrentTrackPlayEvent = false
 
+    @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
     override fun onCreate() {
         super.onCreate()
         Timber.tag("PlaybackService").i("KaonPlaybackService creating")
