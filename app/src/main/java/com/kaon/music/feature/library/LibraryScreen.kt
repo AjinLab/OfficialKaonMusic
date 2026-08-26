@@ -64,7 +64,12 @@ import com.kaon.music.core.data.model.Artist
 import com.kaon.music.core.data.model.Playlist
 import com.kaon.music.core.data.model.Track
 import com.kaon.music.core.designsystem.component.ArtworkImage
+import com.kaon.music.core.designsystem.component.EmptyStateView
 import com.kaon.music.core.designsystem.component.TrackItem
+import androidx.compose.material.icons.filled.Album
+import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.MusicNote
 import com.kaon.music.core.designsystem.theme.KaonBackground
 import com.kaon.music.core.designsystem.theme.KaonPrimary
 import com.kaon.music.core.designsystem.theme.KaonSurfaceElevated
@@ -367,69 +372,84 @@ fun LibraryScreen(
                                 }
                             }
 
-                            items(uiState.tracks, key = { "track_${it.id}" }) { track ->
-                                TrackItem(
-                                    track = track,
-                                    isPlaying = uiState.isPlaying,
-                                    isCurrent = track.id == uiState.activeTrackId,
-                                    onClick = { viewModel.playTrack(track) },
-                                    onFavoriteToggle = { viewModel.toggleFavorite(track.id) },
-                                    onPlayNext = { viewModel.playNext(track) },
-                                    onAddToQueue = { viewModel.addToQueue(track) },
-                                    onAddToPlaylist = { trackForAddToPlaylist = track }
-                                )
+                            if (uiState.tracks.isEmpty()) {
+                                item {
+                                    EmptyStateView(
+                                        icon = Icons.Default.MusicNote,
+                                        title = "No Tracks Found",
+                                        message = "Scan your device storage to discover your local music collection.",
+                                        actionLabel = "Rescan Library",
+                                        onActionClick = { viewModel.triggerSync() }
+                                    )
+                                }
+                            } else {
+                                items(uiState.tracks, key = { "track_${it.id}" }) { track ->
+                                    TrackItem(
+                                        track = track,
+                                        isPlaying = uiState.isPlaying,
+                                        isCurrent = track.id == uiState.activeTrackId,
+                                        onClick = { viewModel.playTrack(track) },
+                                        onFavoriteToggle = { viewModel.toggleFavorite(track.id) },
+                                        onPlayNext = { viewModel.playNext(track) },
+                                        onAddToQueue = { viewModel.addToQueue(track) },
+                                        onAddToPlaylist = { trackForAddToPlaylist = track }
+                                    )
+                                }
                             }
                         }
 
                         LibraryFilter.ALBUMS -> {
-                            items(uiState.albums, key = { "album_${it.albumId}" }) { album ->
-                                AlbumRowItem(
-                                    album = album,
-                                    onClick = { viewModel.selectAlbum(album) }
-                                )
+                            if (uiState.albums.isEmpty()) {
+                                item {
+                                    EmptyStateView(
+                                        icon = Icons.Default.Album,
+                                        title = "No Albums Found",
+                                        message = "Albums will appear here once audio tracks with album metadata are scanned.",
+                                        actionLabel = "Rescan Library",
+                                        onActionClick = { viewModel.triggerSync() }
+                                    )
+                                }
+                            } else {
+                                items(uiState.albums, key = { "album_${it.albumId}" }) { album ->
+                                    AlbumRowItem(
+                                        album = album,
+                                        onClick = { viewModel.selectAlbum(album) }
+                                    )
+                                }
                             }
                         }
 
                         LibraryFilter.ARTISTS -> {
-                            items(uiState.artists, key = { "artist_${it.artistId}_${it.name}" }) { artist ->
-                                ArtistRowItem(
-                                    artist = artist,
-                                    onClick = { viewModel.selectArtist(artist) }
-                                )
+                            if (uiState.artists.isEmpty()) {
+                                item {
+                                    EmptyStateView(
+                                        icon = Icons.Default.Person,
+                                        title = "No Artists Found",
+                                        message = "Artists will appear here once audio tracks with artist metadata are scanned.",
+                                        actionLabel = "Rescan Library",
+                                        onActionClick = { viewModel.triggerSync() }
+                                    )
+                                }
+                            } else {
+                                items(uiState.artists, key = { "artist_${it.artistId}_${it.name}" }) { artist ->
+                                    ArtistRowItem(
+                                        artist = artist,
+                                        onClick = { viewModel.selectArtist(artist) }
+                                    )
+                                }
                             }
                         }
 
                         LibraryFilter.FAVORITES -> {
                             if (uiState.favoriteTracks.isEmpty()) {
                                 item {
-                                    Box(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(top = 64.dp, start = 32.dp, end = 32.dp),
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                            Icon(
-                                                imageVector = Icons.Filled.Favorite,
-                                                contentDescription = null,
-                                                tint = KaonTextTertiary,
-                                                modifier = Modifier.size(56.dp)
-                                            )
-                                            Spacer(modifier = Modifier.height(16.dp))
-                                            Text(
-                                                text = "No Favorites Yet",
-                                                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                                                color = KaonTextPrimary
-                                            )
-                                            Spacer(modifier = Modifier.height(6.dp))
-                                            Text(
-                                                text = "Tap the heart icon on any track to add it to your favorites.",
-                                                style = MaterialTheme.typography.bodyMedium,
-                                                color = KaonTextSecondary,
-                                                textAlign = TextAlign.Center
-                                            )
-                                        }
-                                    }
+                                    EmptyStateView(
+                                        icon = Icons.Filled.Favorite,
+                                        title = "No Favorites Yet",
+                                        message = "Tap the heart icon on any track to add it to your favorites.",
+                                        actionLabel = "Browse Tracks",
+                                        onActionClick = { viewModel.selectFilter(LibraryFilter.TRACKS) }
+                                    )
                                 }
                             } else {
                                 item {
@@ -491,34 +511,13 @@ fun LibraryScreen(
                         LibraryFilter.RECENT -> {
                             if (uiState.recentTracks.isEmpty() && uiState.recentlyAddedTracks.isEmpty()) {
                                 item {
-                                    Box(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(top = 64.dp, start = 32.dp, end = 32.dp),
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                            Icon(
-                                                imageVector = Icons.Default.MusicNote,
-                                                contentDescription = null,
-                                                tint = KaonTextTertiary,
-                                                modifier = Modifier.size(56.dp)
-                                            )
-                                            Spacer(modifier = Modifier.height(16.dp))
-                                            Text(
-                                                text = "No Recent Activity",
-                                                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                                                color = KaonTextPrimary
-                                            )
-                                            Spacer(modifier = Modifier.height(6.dp))
-                                            Text(
-                                                text = "Listening history and newly discovered tracks will appear here.",
-                                                style = MaterialTheme.typography.bodyMedium,
-                                                color = KaonTextSecondary,
-                                                textAlign = TextAlign.Center
-                                            )
-                                        }
-                                    }
+                                    EmptyStateView(
+                                        icon = Icons.Default.History,
+                                        title = "No Recent Activity",
+                                        message = "Listening history and newly discovered tracks will appear here.",
+                                        actionLabel = "Browse Tracks",
+                                        onActionClick = { viewModel.selectFilter(LibraryFilter.TRACKS) }
+                                    )
                                 }
                             } else {
                                 // Section 1: Recently Played

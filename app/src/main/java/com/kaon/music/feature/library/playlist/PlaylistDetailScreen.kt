@@ -54,8 +54,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.kaon.music.core.data.model.Playlist
 import com.kaon.music.core.data.model.Track
+import com.kaon.music.core.designsystem.component.EmptyStateView
 import com.kaon.music.core.designsystem.component.TrackItem
 import com.kaon.music.core.designsystem.component.formatDuration
 import com.kaon.music.core.designsystem.theme.KaonBackground
@@ -251,27 +253,13 @@ fun PlaylistDetailScreen(
             // Track Items or Empty State
             if (tracks.isEmpty()) {
                 item {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(top = 32.dp, start = 32.dp, end = 32.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text(
-                                text = "Playlist is Empty",
-                                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                                color = KaonTextPrimary
-                            )
-                            Spacer(modifier = Modifier.height(6.dp))
-                            Text(
-                                text = "Tap the options menu (⋮) on any song in your library and select 'Add to Playlist'.",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = KaonTextSecondary,
-                                textAlign = TextAlign.Center
-                            )
-                        }
-                    }
+                    EmptyStateView(
+                        icon = Icons.AutoMirrored.Filled.QueueMusic,
+                        title = "Playlist is Empty",
+                        message = "Add songs to this playlist from your library or search results using the track options menu (⋮).",
+                        actionLabel = "Browse Library",
+                        onActionClick = onBack
+                    )
                 }
             } else {
                 itemsIndexed(
