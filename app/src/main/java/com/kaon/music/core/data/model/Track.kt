@@ -41,10 +41,26 @@ data class Track(
     val isFavorite: Boolean = false,
     val isMissing: Boolean = false,
     val source: String = "LOCAL",
-    val youtubeVideoId: String? = null
+    val youtubeVideoId: String? = null,
+    val mimeType: String? = null
 ) {
     val displayTitle: String get() = title.ifBlank { "Unknown Title" }
     val displayArtist: String get() = artist.ifBlank { "Unknown Artist" }
     val displayAlbum: String get() = album.ifBlank { "Unknown Album" }
     val isOnline: Boolean get() = source == "YOUTUBE"
+
+    /** Clean human-readable format label (e.g., "FLAC", "MP3", "WAV", "M4A", "OPUS", "YouTube"). */
+    val audioFormatLabel: String
+        get() = if (isOnline) "YouTube" else AudioFormat.label(mimeType, contentUri)
+
+    /** True if local track format is lossless (FLAC, WAV, ALAC, AIFF, DSD, APE). */
+    val isLossless: Boolean
+        get() = !isOnline && AudioFormat.isLossless(mimeType, contentUri)
+
+    /** Descriptive format quality badge (e.g. "FLAC • Lossless", "MP3", "YouTube Music"). */
+    val formatBadge: String
+        get() = if (isOnline) "YouTube Music" else AudioFormat.qualityBadge(mimeType, contentUri)
+
+    val playbackSourceLabel: String
+        get() = if (isOnline) "YouTube Music" else AudioFormat.label(mimeType, contentUri)
 }

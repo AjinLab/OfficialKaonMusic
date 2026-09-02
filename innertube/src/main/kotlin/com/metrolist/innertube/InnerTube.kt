@@ -41,6 +41,18 @@ class InnerTube {
     private var configuredProxyAuth: String? = null
     private var httpClient = createClient()
     private var innerTubeX = InnerTubeX(httpClient)
+    private var transportGeneration = 0L
+
+    /**
+     * The transport used by auxiliary extractors must be read as one snapshot. Proxy changes
+     * replace both the HTTP client and InnerTubeX instance, so exposing the pair separately can
+     * make a caller combine objects from different generations.
+     */
+    class ExtractionTransport internal constructor(
+        val innerTube: InnerTubeX,
+        val httpClient: HttpClient,
+        val generation: Long,
+    )
 
     var locale: YouTubeLocale
         get() = innerTubeX.locale
@@ -94,6 +106,7 @@ class InnerTube {
             innerTubeX.useLoginForBrowse = value
         }
 
+    @Synchronized
     private fun recreateTransport() {
         val session = innerTubeX.sessionSnapshot()
         innerTubeX.close()
@@ -111,7 +124,16 @@ class InnerTube {
                 )
                 replacement.regionOverrideActive = session.regionOverrideActive
             }
+        transportGeneration++
     }
+
+    @Synchronized
+    fun extractionTransport(): ExtractionTransport =
+        ExtractionTransport(
+            innerTube = innerTubeX,
+            httpClient = httpClient,
+            generation = transportGeneration,
+        )
 
     @OptIn(ExperimentalSerializationApi::class)
     private fun createClient() =

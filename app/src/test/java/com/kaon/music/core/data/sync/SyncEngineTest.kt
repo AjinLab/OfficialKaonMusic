@@ -1481,4 +1481,10 @@ class FakePlayEventDao(private val fakeTrackDao: FakeTrackDao? = null) : PlayEve
             ?.take(limit)
             ?: emptyList()
     }
+
+    override suspend fun clearAllEvents(): Int {
+        val size = events.size
+        events.clear()
+        return size
+    }
 }

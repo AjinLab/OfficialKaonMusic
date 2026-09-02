@@ -14,6 +14,7 @@ import androidx.media3.session.SessionToken
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
 import com.google.common.util.concurrent.MoreExecutors
+import com.kaon.music.core.data.model.AudioFormat
 import com.kaon.music.core.data.model.Track
 import com.kaon.music.core.data.repository.TrackRepository
 import com.kaon.music.core.playback.model.PlaybackState
@@ -69,8 +70,27 @@ class PlaybackFacade(
     private var mediaController: MediaController? = null
 
     private var positionPollJob: Job? = null
+    private var preResolveEnabled = true
+    private var streamingQuality: com.kaon.music.core.online.AudioQuality = com.kaon.music.core.online.AudioQuality.AUTO
+    private var preferredAudioType: com.kaon.music.core.online.AudioType = com.kaon.music.core.online.AudioType.AUTO
 
     init {
+        try {
+            val settingsRepo = com.kaon.music.core.data.repository.SettingsRepository(context)
+            facadeScope.launch {
+                try {
+                    settingsRepo.userSettingsFlow.collect { settings ->
+                        preResolveEnabled = settings.preResolveNextTracks
+                        streamingQuality = settings.streamingQuality
+                        preferredAudioType = settings.preferredAudioType
+                    }
+                } catch (e: Throwable) {
+                    // Ignored in unit tests
+                }
+            }
+        } catch (e: Throwable) {
+            // Ignored in headless unit tests
+        }
         try {
             connectToService()
         } catch (e: Throwable) {
@@ -130,9 +150,7 @@ class PlaybackFacade(
 
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
                 facadeScope.launch {
-                    val track = mediaItem?.mediaId?.toLongOrNull()?.let { trackId ->
-                        trackRepository.getTrackById(trackId)
-                    }
+                    val track = mediaItem?.let { item -> resolveTrack(item) }
                     _playbackState.update {
                         it.copy(
                             currentTrack = track,
@@ -141,7 +159,7 @@ class PlaybackFacade(
                             playbackPositionMs = player.currentPosition.coerceAtLeast(0L)
                         )
                     }
-                    triggerNextTracksPreResolution(_playbackState.value.queue, player.currentMediaItemIndex)
+                    triggerNextTracksPreResolution()
                 }
             }
 
@@ -178,10 +196,9 @@ class PlaybackFacade(
 
     private fun updateFullState(player: Player) {
         val currentMediaItem = player.currentMediaItem
-        val currentId = currentMediaItem?.mediaId?.toLongOrNull()
 
         facadeScope.launch {
-            val track = currentId?.let { trackRepository.getTrackById(it) }
+            val track = currentMediaItem?.let { item -> resolveTrack(item) }
             _playbackState.update {
                 it.copy(
                     currentTrack = track,
@@ -208,11 +225,11 @@ class PlaybackFacade(
     private fun updateQueueFromTimeline(player: Player) {
         facadeScope.launch {
             val count = player.mediaItemCount
-            val trackIds = mutableListOf<Long>()
-            for (i in 0 until count) {
-                player.getMediaItemAt(i).mediaId.toLongOrNull()?.let { trackIds.add(it) }
+            val queueTracks = buildList {
+                for (i in 0 until count) {
+                    resolveTrack(player.getMediaItemAt(i))?.let(::add)
+                }
             }
-            val queueTracks = trackRepository.getTracksByIds(trackIds)
             _playbackState.update {
                 it.copy(
                     queue = queueTracks,
@@ -311,7 +328,8 @@ class PlaybackFacade(
             controller.prepare()
             controller.play()
         }
-        triggerNextTracksPreResolution(queue, targetIndex)
+        // Next-track preparation is triggered by onMediaItemTransition (fires for both
+        // setMediaItems and identical-queue seeks), using the player's shuffle-aware next index.
     }
 
     fun playQueue(queue: List<Track>, startIndex: Int = 0) {
@@ -324,22 +342,36 @@ class PlaybackFacade(
         controller.setMediaItems(mediaItems, index, 0L)
         controller.prepare()
         controller.play()
-        triggerNextTracksPreResolution(queue, index)
     }
 
     private var preResolutionJob: kotlinx.coroutines.Job? = null
 
-    private fun triggerNextTracksPreResolution(queue: List<Track>, currentIndex: Int) {
+    /**
+     * Prepares the likely next queue item while the current track plays.
+     *
+     * The next index comes from the player itself (`nextMediaItemIndex`), which already
+     * accounts for shuffle order and repeat mode; timeline-index arithmetic from the facade
+     * would pre-resolve the wrong items when shuffle is enabled. Repeat-one (next == current)
+     * and end-of-queue (C.INDEX_UNSET) resolve nothing. Fires on media item transitions —
+     * queue mutations that change the next item take effect at the next transition, and a
+     * stale warm entry is harmless (bounded TTL).
+     */
+    private fun triggerNextTracksPreResolution() {
         preResolutionJob?.cancel()
+        if (!preResolveEnabled) return
+        val controller = mediaController ?: return
+        val currentIndex = controller.currentMediaItemIndex
+        val nextIndex = controller.nextMediaItemIndex
+        if (nextIndex < 0 || nextIndex == currentIndex) return
         preResolutionJob = facadeScope.launch {
-            for (offset in 1..2) {
-                val targetIndex = currentIndex + offset
-                if (targetIndex in queue.indices) {
-                    val nextTrack = queue[targetIndex]
-                    if (nextTrack.source == "YOUTUBE" && !nextTrack.youtubeVideoId.isNullOrBlank()) {
-                        YouTubeStreamResolver.preResolve(nextTrack.youtubeVideoId)
-                    }
-                }
+            val nextItem = runCatching { controller.getMediaItemAt(nextIndex) }.getOrNull() ?: return@launch
+            val nextTrack = resolveTrack(nextItem) ?: return@launch
+            if (nextTrack.source == "YOUTUBE" && !nextTrack.youtubeVideoId.isNullOrBlank()) {
+                YouTubeStreamResolver.preResolve(
+                    videoId = nextTrack.youtubeVideoId,
+                    quality = streamingQuality,
+                    audioType = preferredAudioType
+                )
             }
         }
     }
@@ -387,6 +419,7 @@ class PlaybackFacade(
      */
     fun clearQueue() {
         val controller = mediaController ?: return
+        preResolutionJob?.cancel()
         controller.stop()
         controller.clearMediaItems()
         _playbackState.update {
@@ -427,17 +460,70 @@ class PlaybackFacade(
             source == "YOUTUBE" && !youtubeVideoId.isNullOrBlank() -> Uri.parse("youtube://$youtubeVideoId")
             else -> contentUri
         }
-        return MediaItem.Builder()
+        val builder = MediaItem.Builder()
             .setMediaId(id.toString())
             .setUri(uri)
-            .setMediaMetadata(
+        return builder.setMediaMetadata(
                 MediaMetadata.Builder()
                     .setTitle(title)
                     .setArtist(artist)
                     .setAlbumTitle(album)
                     .setArtworkUri(contentUri.takeIf { source == "YOUTUBE" })
+                    .setExtras(Bundle().apply {
+                        putLong(EXTRA_MEDIA_STORE_ID, mediaStoreId)
+                        putString(EXTRA_SOURCE, source)
+                        putString(EXTRA_YOUTUBE_VIDEO_ID, youtubeVideoId)
+                        putString(EXTRA_MIME_TYPE, mimeType)
+                        putLong(EXTRA_ALBUM_ID, albumId)
+                        putLong(EXTRA_DURATION_MS, durationMs)
+                        putLong(EXTRA_SIZE_BYTES, sizeBytes)
+                    })
                     .build()
             )
             .build()
+    }
+
+    /**
+     * Online search results are intentionally not inserted into the local library.
+     * Media3 still carries their complete metadata, so the UI must resolve from
+     * that metadata when Room has no matching row.
+     */
+    private suspend fun resolveTrack(mediaItem: MediaItem): Track? {
+        val id = mediaItem.mediaId.toLongOrNull() ?: return null
+        trackRepository.getTrackById(id)?.let { return it }
+
+        val metadata = mediaItem.mediaMetadata
+        val extras = metadata.extras
+        val uri = mediaItem.localConfiguration?.uri
+        val source = extras?.getString(EXTRA_SOURCE)
+            ?: if (uri?.scheme == "youtube") "YOUTUBE" else "LOCAL"
+        val youtubeVideoId = extras?.getString(EXTRA_YOUTUBE_VIDEO_ID)
+            ?: uri?.takeIf { it.scheme == "youtube" }?.schemeSpecificPart
+
+        return Track(
+            id = id,
+            mediaStoreId = extras?.getLong(EXTRA_MEDIA_STORE_ID, 0L) ?: 0L,
+            title = metadata.title?.toString().orEmpty(),
+            artist = metadata.artist?.toString().orEmpty(),
+            album = metadata.albumTitle?.toString().orEmpty(),
+            albumId = extras?.getLong(EXTRA_ALBUM_ID, 0L) ?: 0L,
+            durationMs = extras?.getLong(EXTRA_DURATION_MS, 0L) ?: 0L,
+            sizeBytes = extras?.getLong(EXTRA_SIZE_BYTES, 0L) ?: 0L,
+            dateModified = 0L,
+            contentUri = metadata.artworkUri.takeIf { source == "YOUTUBE" } ?: uri,
+            source = source,
+            youtubeVideoId = youtubeVideoId,
+            mimeType = extras?.getString(EXTRA_MIME_TYPE)
+        )
+    }
+
+    private companion object {
+        const val EXTRA_MEDIA_STORE_ID = "kaon.media_store_id"
+        const val EXTRA_SOURCE = "kaon.source"
+        const val EXTRA_YOUTUBE_VIDEO_ID = "kaon.youtube_video_id"
+        const val EXTRA_MIME_TYPE = "kaon.mime_type"
+        const val EXTRA_ALBUM_ID = "kaon.album_id"
+        const val EXTRA_DURATION_MS = "kaon.duration_ms"
+        const val EXTRA_SIZE_BYTES = "kaon.size_bytes"
     }
 }

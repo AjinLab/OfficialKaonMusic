@@ -109,6 +109,7 @@ class SearchViewModelTest {
         override suspend fun getRecentlyPlayedTrackEntities(limit: Int): List<TrackEntity> = emptyList()
         override fun observeMostPlayedTrackEntities(limit: Int): Flow<List<TrackEntity>> = flowOf(emptyList())
         override suspend fun getMostPlayedTrackEntities(limit: Int): List<TrackEntity> = emptyList()
+        override suspend fun clearAllEvents(): Int = 0
     }
 
     private class FakeSearchPlaylistDao(private val fakeTrackDao: FakeSearchTrackDao) : PlaylistDao {
@@ -291,4 +292,35 @@ class SearchViewModelTest {
         assertEquals("Night Drives", playlists[0].name)
         assertEquals(1, playlists[0].trackCount)
     }
+
+    @Test
+    fun filterSelection_updatesSelectedFilterState() = runTest {
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { viewModel.uiState.collect {} }
+
+        assertEquals(SearchFilterType.ALL, viewModel.uiState.value.selectedFilter)
+
+        viewModel.onFilterSelected(SearchFilterType.SONGS)
+        advanceUntilIdle()
+        assertEquals(SearchFilterType.SONGS, viewModel.uiState.value.selectedFilter)
+
+        viewModel.onFilterSelected(SearchFilterType.ALBUMS)
+        advanceUntilIdle()
+        assertEquals(SearchFilterType.ALBUMS, viewModel.uiState.value.selectedFilter)
+
+        viewModel.onFilterSelected(SearchFilterType.PLAYLISTS)
+        advanceUntilIdle()
+        assertEquals(SearchFilterType.PLAYLISTS, viewModel.uiState.value.selectedFilter)
+    }
+
+    @Test
+    fun onSuggestionSelected_updatesSearchQuery() = runTest {
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { viewModel.uiState.collect {} }
+
+        viewModel.onSuggestionSelected("Solaris Echoes")
+        advanceUntilIdle()
+
+        assertEquals("Solaris Echoes", viewModel.uiState.value.searchQuery)
+        assertTrue(viewModel.uiState.value.suggestions.isEmpty())
+    }
 }
+

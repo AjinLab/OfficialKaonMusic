@@ -26,7 +26,8 @@ fun HomeScreen(
     onAlbumClick: (Album) -> Unit,
     onArtistClick: (Artist) -> Unit,
     onSeeAllRecentlyPlayed: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onSettingsClick: () -> Unit = {}
 ) {
     val uiState by viewModel.uiState.collectAsState()
 
@@ -38,7 +39,7 @@ fun HomeScreen(
         contentPadding = PaddingValues(bottom = 24.dp)
     ) {
         item {
-            HomeHeader()
+            HomeHeader(onSettingsClick = onSettingsClick)
         }
 
         item {

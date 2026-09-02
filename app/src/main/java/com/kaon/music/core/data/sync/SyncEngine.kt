@@ -34,7 +34,10 @@ class SyncEngine(
     private val trackDao: TrackDao
 ) {
 
-    suspend fun synchronize(orphanRetentionDays: Long = 30): SyncResult = withContext(Dispatchers.IO) {
+    suspend fun synchronize(
+        orphanRetentionDays: Long = 30,
+        minDurationMs: Long = 5000L
+    ): SyncResult = withContext(Dispatchers.IO) {
         // Sync-safety guard (Milestone 2 Failure-Mode Matrix #4):
         // An empty scan is only meaningful when permission is granted.
         // Never reconcile or mark tracks missing if permission is revoked.
@@ -43,7 +46,11 @@ class SyncEngine(
             return@withContext SyncResult(0, 0, 0, 0, 0, 0)
         }
 
-        val scanItems = scanner.scanAudioFiles()
+        val scanItems = if (minDurationMs == 5000L) {
+            scanner.scanAudioFiles()
+        } else {
+            scanner.scanAudioFiles(minDurationMs = minDurationMs)
+        }
         val storedTracks = trackDao.getAllStoredTracks()
 
         val storedByMediaStoreId = storedTracks.associateBy { it.mediaStoreId }.toMutableMap()
@@ -61,7 +68,8 @@ class SyncEngine(
                 // Exact MediaStore ID match
                 matchedStoredTrackIds.add(existing.trackId)
                 val needsBackfill = existing.dateAdded == 0L && item.dateAdded > 0L
-                if (existing.dateModified != item.dateModified || existing.isMissing || needsBackfill) {
+                val needsMimeType = existing.mimeType.isNullOrBlank() && !item.mimeType.isNullOrBlank()
+                if (existing.dateModified != item.dateModified || existing.isMissing || needsBackfill || needsMimeType) {
                     val resolvedDateAdded = if (existing.dateAdded == 0L && item.dateAdded > 0L) {
                         Timber.tag("SyncEngine").d("Backfilling date_added for track '${existing.title}' (trackId=${existing.trackId}) to ${item.dateAdded}")
                         item.dateAdded
@@ -88,6 +96,7 @@ class SyncEngine(
                             artistNormalized = normalize(item.artist),
                             albumNormalized = normalize(item.album),
                             isMissing = false,
+                            mimeType = item.mimeType,
                             lastSeenTimestamp = System.currentTimeMillis()
                         )
                     )
@@ -99,8 +108,17 @@ class SyncEngine(
                 if (verifiedMatch != null) {
                     // Unambiguous single match: Re-link stored Kaon trackId to new MediaStoreId
                     trackDao.reLinkTrack(verifiedMatch.trackId, item.mediaStoreId)
-                    if (verifiedMatch.dateAdded == 0L && item.dateAdded > 0L) {
-                        trackDao.updateTrack(verifiedMatch.copy(dateAdded = item.dateAdded, mediaStoreId = item.mediaStoreId, isMissing = false))
+                    if ((verifiedMatch.dateAdded == 0L && item.dateAdded > 0L) ||
+                        (verifiedMatch.mimeType.isNullOrBlank() && !item.mimeType.isNullOrBlank())
+                    ) {
+                        trackDao.updateTrack(
+                            verifiedMatch.copy(
+                                dateAdded = if (verifiedMatch.dateAdded == 0L && item.dateAdded > 0L) item.dateAdded else verifiedMatch.dateAdded,
+                                mediaStoreId = item.mediaStoreId,
+                                mimeType = item.mimeType,
+                                isMissing = false
+                            )
+                        )
                     }
                     matchedStoredTrackIds.add(verifiedMatch.trackId)
                     reLinkCandidates.remove(verifiedMatch)
@@ -130,6 +148,7 @@ class SyncEngine(
                             artistNormalized = normalize(item.artist),
                             albumNormalized = normalize(item.album),
                             isMissing = false,
+                            mimeType = item.mimeType,
                             lastSeenTimestamp = System.currentTimeMillis()
                         )
                     )

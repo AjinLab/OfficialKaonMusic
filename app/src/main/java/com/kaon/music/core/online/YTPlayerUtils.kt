@@ -33,9 +33,45 @@ object YTPlayerUtils {
     private const val logTag = "YTPlayerUtils"
     private const val TAG = "YTPlayerUtils"
 
-    private val httpClient = OkHttpClient.Builder()
-        .proxy(YouTube.proxy)
-        .build()
+    private data class ValidationClientConfig(
+        val proxy: java.net.Proxy?,
+        val proxyAuth: String?,
+    )
+
+    @Volatile
+    private var validationClientConfig: ValidationClientConfig? = null
+    @Volatile
+    private var validationClient: OkHttpClient? = null
+
+    private fun validationHttpClient(): OkHttpClient {
+        val config = ValidationClientConfig(YouTube.proxy, YouTube.proxyAuth)
+        validationClient?.takeIf { validationClientConfig == config }?.let { return it }
+
+        return synchronized(this) {
+            validationClient?.takeIf { validationClientConfig == config } ?: OkHttpClient.Builder()
+                .apply { config.proxy?.let(::proxy) }
+                .apply {
+                    config.proxyAuth?.let { auth ->
+                        proxyAuthenticator { _, response ->
+                            // Do not loop forever when the proxy rejects the credentials.
+                            if (response.request.header("Proxy-Authorization") != null) {
+                                return@proxyAuthenticator null
+                            }
+                            response.request.newBuilder()
+                                .header("Proxy-Authorization", auth)
+                                .build()
+                        }
+                    }
+                }
+                .connectTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
+                .readTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
+                .build()
+                .also {
+                    validationClientConfig = config
+                    validationClient = it
+                }
+        }
+    }
 
     private val poTokenGenerator = PoTokenGenerator()
 
@@ -123,13 +159,14 @@ object YTPlayerUtils {
         videoId: String,
         playlistId: String? = null,
         audioQuality: AudioQuality,
+        audioType: AudioType = AudioType.AUTO,
         connectivityManager: ConnectivityManager,
         contentHints: ContentHints = ContentHints(),
     ): Result<PlaybackData> = runCatching {
         Timber.tag(TAG).d("=== PLAYER RESPONSE FOR PLAYBACK ===")
         Timber.tag(TAG).d("videoId: $videoId")
         Timber.tag(TAG).d("playlistId: $playlistId")
-        Timber.tag(TAG).d("audioQuality: $audioQuality")
+        Timber.tag(TAG).d("audioQuality: $audioQuality, audioType: $audioType")
 
         // Check if this is an uploaded/privately owned track
         val isUploadedTrack = contentHints.isUploaded == true ||
@@ -298,6 +335,7 @@ object YTPlayerUtils {
                         responseToUse,
                         audioQuality,
                         connectivityManager,
+                        audioType,
                     )
 
                 if (format == null) {
@@ -557,8 +595,9 @@ object YTPlayerUtils {
         playerResponse: PlayerResponse,
         audioQuality: AudioQuality,
         connectivityManager: ConnectivityManager,
+        audioType: AudioType = AudioType.AUTO,
     ): PlayerResponse.StreamingData.Format? {
-        Timber.tag(logTag).d("Finding format with audioQuality: $audioQuality, network metered: ${connectivityManager.isActiveNetworkMetered}")
+        Timber.tag(logTag).d("Finding format with audioQuality: $audioQuality, audioType: $audioType, network metered: ${connectivityManager.isActiveNetworkMetered}")
 
         val adaptiveFormats = playerResponse.streamingData?.adaptiveFormats ?: return null
 
@@ -567,10 +606,22 @@ object YTPlayerUtils {
 
         val maxBitrate = audioCapableFormats.maxOfOrNull { it.bitrate } ?: return null
 
-        fun scoreCodec(mimeType: String): Int = when {
-            mimeType.contains("opus", ignoreCase = true) -> 2
-            mimeType.contains("mp4a", ignoreCase = true) -> 1
-            else -> 0
+        fun scoreCodec(mimeType: String): Int = when (audioType) {
+            AudioType.OPUS -> when {
+                mimeType.contains("opus", ignoreCase = true) -> 5
+                mimeType.contains("mp4a", ignoreCase = true) -> 1
+                else -> 0
+            }
+            AudioType.AAC -> when {
+                mimeType.contains("mp4a", ignoreCase = true) -> 5
+                mimeType.contains("opus", ignoreCase = true) -> 1
+                else -> 0
+            }
+            AudioType.AUTO -> when {
+                mimeType.contains("opus", ignoreCase = true) -> 2
+                mimeType.contains("mp4a", ignoreCase = true) -> 1
+                else -> 0
+            }
         }
 
         val format = when (audioQuality) {
@@ -593,8 +644,8 @@ object YTPlayerUtils {
                 val cappedFormats = audioCapableFormats.filter { it.bitrate <= 128000 }
                 val lowFormat = cappedFormats
                     .filter { it.isOriginal }
-                    .maxByOrNull { it.bitrate }
-                    ?: cappedFormats.maxByOrNull { it.bitrate }
+                    .maxWithOrNull(compareBy<PlayerResponse.StreamingData.Format> { scoreCodec(it.mimeType) }.thenBy { it.bitrate })
+                    ?: cappedFormats.maxWithOrNull(compareBy<PlayerResponse.StreamingData.Format> { scoreCodec(it.mimeType) }.thenBy { it.bitrate })
                     ?: audioCapableFormats
                         .filter { it.isOriginal }
                         .minByOrNull { kotlin.math.abs(it.bitrate.toDouble() - 128000.0) }
@@ -612,8 +663,8 @@ object YTPlayerUtils {
                 val cappedFormats = audioCapableFormats.filter { it.bitrate <= targetBitrate }
                 val autoFormat = cappedFormats
                     .filter { it.isOriginal }
-                    .maxByOrNull { it.bitrate }
-                    ?: cappedFormats.maxByOrNull { it.bitrate }
+                    .maxWithOrNull(compareBy<PlayerResponse.StreamingData.Format> { scoreCodec(it.mimeType) }.thenBy { it.bitrate })
+                    ?: cappedFormats.maxWithOrNull(compareBy<PlayerResponse.StreamingData.Format> { scoreCodec(it.mimeType) }.thenBy { it.bitrate })
                     ?: audioCapableFormats
                         .filter { it.isOriginal }
                         .minByOrNull { kotlin.math.abs(it.bitrate - targetBitrate) }
@@ -660,7 +711,7 @@ object YTPlayerUtils {
                 println("[PLAYBACK_DEBUG] Added cookie to validation request")
             }
 
-            httpClient.newCall(requestBuilder.build()).execute().use { response ->
+            validationHttpClient().newCall(requestBuilder.build()).execute().use { response ->
                 val isSuccessful = response.isSuccessful
                 Timber.tag(logTag).d("Stream URL validation result: ${if (isSuccessful) "Success" else "Failed"} (${response.code})")
                 return isSuccessful

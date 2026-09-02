@@ -166,6 +166,7 @@ class HomeViewModelTest {
             flowOf(mostPlayed.take(limit))
         override suspend fun getMostPlayedTrackEntities(limit: Int): List<TrackEntity> =
             mostPlayed.take(limit)
+        override suspend fun clearAllEvents(): Int = 0
     }
 
     private lateinit var trackRepository: TrackRepository

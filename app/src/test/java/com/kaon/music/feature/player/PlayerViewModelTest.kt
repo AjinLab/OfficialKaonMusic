@@ -27,6 +27,7 @@ import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
@@ -124,6 +125,7 @@ class PlayerViewModelTest {
         override suspend fun getRecentlyPlayedTrackEntities(limit: Int): List<TrackEntity> = emptyList()
         override fun observeMostPlayedTrackEntities(limit: Int): Flow<List<TrackEntity>> = flowOf(emptyList())
         override suspend fun getMostPlayedTrackEntities(limit: Int): List<TrackEntity> = emptyList()
+        override suspend fun clearAllEvents(): Int = 0
     }
 
     private class FakeTestPlaylistDao(private val trackDao: FakeTestTrackDao) : PlaylistDao {
@@ -339,4 +341,76 @@ class PlayerViewModelTest {
         assertFalse(viewModel.isFullPlayerExpanded.value)
         assertFalse(viewModel.isQueueSheetVisible.value)
     }
+
+    @Test
+    fun lyricsSheet_toggleAndState() = runTest {
+        assertFalse(viewModel.isLyricsSheetVisible.value)
+
+        viewModel.toggleLyricsSheet()
+        assertTrue(viewModel.isLyricsSheetVisible.value)
+        assertFalse(viewModel.isQueueSheetVisible.value)
+
+        viewModel.toggleLyricsSheet()
+        assertFalse(viewModel.isLyricsSheetVisible.value)
+    }
+
+    @Test
+    fun lyricsState_updatesWhenTrackChanges() = runTest {
+        val fakeMetadataRepo = object : com.kaon.music.core.data.repository.MetadataRepository {
+            override suspend fun getLyrics(track: Track): com.kaon.music.core.data.model.LyricsResult {
+                return com.kaon.music.core.data.model.LyricsResult(
+                    plainLyrics = "These are lyrics for ${track.title}",
+                    source = "LRCLIB"
+                )
+            }
+            override suspend fun getTrackMetadata(track: Track): com.kaon.music.core.data.model.TrackMetadata? = null
+            override suspend fun getAlbumMetadata(albumTitle: String, artistName: String): com.kaon.music.core.data.model.AlbumMetadata? = null
+            override suspend fun getArtistMetadata(artistName: String): com.kaon.music.core.data.model.ArtistMetadata? = null
+            override suspend fun getAlbumCoverArtUrl(albumTitle: String, artistName: String): String? = null
+            override suspend fun getArtistPhotoUrl(artistName: String): String? = null
+            override suspend fun getTrackArtworkUrl(track: Track): String? = null
+            override suspend fun getTrackPreviewUrl(track: Track): String? = null
+        }
+
+        val vm = PlayerViewModel(
+            playbackFacade = playbackFacade,
+            trackRepository = trackRepository,
+            playlistRepository = playlistRepository,
+            metadataRepository = fakeMetadataRepo
+        )
+
+        vm.fetchLyricsAndMetadata(domainTrack1)
+        advanceUntilIdle()
+
+        assertNotNull(vm.lyricsState.value)
+        assertEquals("These are lyrics for Resonance", vm.lyricsState.value?.plainLyrics)
+    }
+
+    @Test
+    fun fullPlayer_collapsesWhenCurrentTrackIsCleared() = runTest {
+        val vm = PlayerViewModel(
+            playbackFacade = playbackFacade,
+            trackRepository = trackRepository,
+            playlistRepository = playlistRepository
+        )
+
+        playbackFacade.updatePlaybackStateForTesting(
+            PlaybackState(
+                queue = listOf(domainTrack1),
+                currentIndex = 0,
+                currentTrack = domainTrack1,
+                isPlaying = true
+            )
+        )
+        advanceUntilIdle()
+
+        vm.expandFullPlayer()
+        assertTrue(vm.isFullPlayerExpanded.value)
+
+        playbackFacade.updatePlaybackStateForTesting(PlaybackState())
+        advanceUntilIdle()
+
+        assertFalse(vm.isFullPlayerExpanded.value)
+    }
 }
+

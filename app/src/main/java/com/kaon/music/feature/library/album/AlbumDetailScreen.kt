@@ -8,7 +8,6 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -61,9 +60,9 @@ fun AlbumDetailScreen(
     onFavoriteToggle: (Long) -> Unit,
     onPlayNext: (Track) -> Unit,
     onAddToQueue: (Track) -> Unit,
-    onAddToPlaylist: (Track) -> Unit = {},
     bottomPadding: PaddingValues,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onAddToPlaylist: (Track) -> Unit = {}
 ) {
     BackHandler(onBack = onBack)
 
@@ -115,6 +114,8 @@ fun AlbumDetailScreen(
                     ) {
                         ArtworkImage(
                             albumId = album.albumId,
+                            album = album.title,
+                            artist = album.artist,
                             sizeBucket = SizeBucket.FULL,
                             modifier = Modifier.fillMaxSize(),
                             cornerRadius = 16.dp

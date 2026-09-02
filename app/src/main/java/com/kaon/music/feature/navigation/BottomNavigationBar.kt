@@ -33,13 +33,16 @@ fun BottomNavigationBar(
     onScreenSelected: (AppScreen) -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val dividerColor = KaonDivider
+    val backgroundColor = KaonBackground
+
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .background(KaonBackground.copy(alpha = 0.95f))
+            .background(backgroundColor.copy(alpha = 0.95f))
             .drawBehind {
                 drawLine(
-                    color = KaonDivider,
+                    color = dividerColor,
                     start = Offset(0f, 0f),
                     end = Offset(size.width, 0f),
                     strokeWidth = 1f

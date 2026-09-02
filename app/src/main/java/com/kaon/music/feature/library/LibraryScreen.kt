@@ -17,13 +17,13 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Album
 import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Person
@@ -66,10 +66,6 @@ import com.kaon.music.core.data.model.Track
 import com.kaon.music.core.designsystem.component.ArtworkImage
 import com.kaon.music.core.designsystem.component.EmptyStateView
 import com.kaon.music.core.designsystem.component.TrackItem
-import androidx.compose.material.icons.filled.Album
-import androidx.compose.material.icons.filled.History
-import androidx.compose.material.icons.filled.Person
-import androidx.compose.material.icons.filled.MusicNote
 import com.kaon.music.core.designsystem.theme.KaonBackground
 import com.kaon.music.core.designsystem.theme.KaonPrimary
 import com.kaon.music.core.designsystem.theme.KaonSurfaceElevated
@@ -78,7 +74,6 @@ import com.kaon.music.core.designsystem.theme.KaonTextSecondary
 import com.kaon.music.core.designsystem.theme.KaonTextTertiary
 import com.kaon.music.feature.library.album.AlbumDetailScreen
 import com.kaon.music.feature.library.artist.ArtistDetailScreen
-import com.kaon.music.feature.library.artist.ArtistListItem
 import com.kaon.music.feature.library.playlist.AddToPlaylistBottomSheet
 import com.kaon.music.feature.library.playlist.LikedSongsScreen
 import com.kaon.music.feature.library.playlist.PlaylistDetailScreen
@@ -87,9 +82,9 @@ import com.kaon.music.feature.library.playlist.PlaylistDetailScreen
 fun LibraryScreen(
     viewModel: LibraryViewModel,
     bottomPadding: PaddingValues,
+    modifier: Modifier = Modifier,
     onNavigateToSearch: () -> Unit = {},
-    onRequestPermission: () -> Unit = {},
-    modifier: Modifier = Modifier
+    onRequestPermission: () -> Unit = {}
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
@@ -102,6 +97,79 @@ fun LibraryScreen(
         uiState.userMessage?.let { message ->
             snackbarHostState.showSnackbar(message)
             viewModel.dismissUserMessage()
+        }
+    }
+
+    // Snackbars and the add-to-playlist flow must stay reachable from the detail screens
+    // below, which replace the browse content entirely.
+    val overlays: @Composable () -> Unit = {
+        if (trackForAddToPlaylist != null) {
+            AddToPlaylistBottomSheet(
+                track = trackForAddToPlaylist!!,
+                playlists = uiState.playlists,
+                onDismiss = { trackForAddToPlaylist = null },
+                onSelectPlaylist = { playlist ->
+                    val track = trackForAddToPlaylist!!
+                    viewModel.addTrackToPlaylist(playlist.id, track.id, track.displayTitle, playlist.name)
+                    trackForAddToPlaylist = null
+                },
+                onCreateNewPlaylist = {
+                    val track = trackForAddToPlaylist!!
+                    trackToAppendAfterCreate = track.id
+                    trackForAddToPlaylist = null
+                    showCreatePlaylistDialog = true
+                }
+            )
+        }
+
+        if (showCreatePlaylistDialog) {
+            var playlistNameInput by remember { mutableStateOf("") }
+            AlertDialog(
+                onDismissRequest = { showCreatePlaylistDialog = false },
+                title = { Text("New Playlist") },
+                text = {
+                    OutlinedTextField(
+                        value = playlistNameInput,
+                        onValueChange = { if (it.length <= 50) playlistNameInput = it },
+                        label = { Text("Playlist Name") },
+                        placeholder = { Text("My Awesome Playlist") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            val name = playlistNameInput.trim()
+                            if (name.isNotBlank()) {
+                                viewModel.createPlaylist(name, trackToAppendAfterCreate)
+                                showCreatePlaylistDialog = false
+                                trackToAppendAfterCreate = null
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = KaonPrimary)
+                    ) {
+                        Text("Create")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = {
+                        showCreatePlaylistDialog = false
+                        trackToAppendAfterCreate = null
+                    }) {
+                        Text("Cancel", color = KaonTextSecondary)
+                    }
+                }
+            )
+        }
+
+        Box(modifier = Modifier.fillMaxSize()) {
+            SnackbarHost(
+                hostState = snackbarHostState,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = bottomPadding.calculateBottomPadding() + 8.dp)
+            )
         }
     }
 
@@ -128,6 +196,7 @@ fun LibraryScreen(
             bottomPadding = bottomPadding,
             modifier = modifier
         )
+        overlays()
         return
     }
 
@@ -147,6 +216,7 @@ fun LibraryScreen(
             bottomPadding = bottomPadding,
             modifier = modifier
         )
+        overlays()
         return
     }
 
@@ -168,6 +238,7 @@ fun LibraryScreen(
             bottomPadding = bottomPadding,
             modifier = modifier
         )
+        overlays()
         return
     }
 
@@ -190,6 +261,7 @@ fun LibraryScreen(
             bottomPadding = bottomPadding,
             modifier = modifier
         )
+        overlays()
         return
     }
 
@@ -744,76 +816,9 @@ fun LibraryScreen(
                 }
             }
         }
-
-        SnackbarHost(
-            hostState = snackbarHostState,
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .padding(bottom = bottomPadding.calculateBottomPadding() + 8.dp)
-        )
     }
 
-    // Add to Playlist Bottom Sheet
-    if (trackForAddToPlaylist != null) {
-        AddToPlaylistBottomSheet(
-            track = trackForAddToPlaylist!!,
-            playlists = uiState.playlists,
-            onDismiss = { trackForAddToPlaylist = null },
-            onSelectPlaylist = { playlist ->
-                val track = trackForAddToPlaylist!!
-                viewModel.addTrackToPlaylist(playlist.id, track.id, track.displayTitle, playlist.name)
-                trackForAddToPlaylist = null
-            },
-            onCreateNewPlaylist = {
-                val track = trackForAddToPlaylist!!
-                trackToAppendAfterCreate = track.id
-                trackForAddToPlaylist = null
-                showCreatePlaylistDialog = true
-            }
-        )
-    }
-
-    // Create Playlist Dialog
-    if (showCreatePlaylistDialog) {
-        var playlistNameInput by remember { mutableStateOf("") }
-        AlertDialog(
-            onDismissRequest = { showCreatePlaylistDialog = false },
-            title = { Text("New Playlist") },
-            text = {
-                OutlinedTextField(
-                    value = playlistNameInput,
-                    onValueChange = { if (it.length <= 50) playlistNameInput = it },
-                    label = { Text("Playlist Name") },
-                    placeholder = { Text("My Awesome Playlist") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        val name = playlistNameInput.trim()
-                        if (name.isNotBlank()) {
-                            viewModel.createPlaylist(name, trackToAppendAfterCreate)
-                            showCreatePlaylistDialog = false
-                            trackToAppendAfterCreate = null
-                        }
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = KaonPrimary)
-                ) {
-                    Text("Create")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = {
-                    showCreatePlaylistDialog = false
-                    trackToAppendAfterCreate = null
-                }) {
-                    Text("Cancel", color = KaonTextSecondary)
-                }
-            }
-        )
-    }
+    overlays()
 }
 
 @Composable
@@ -962,18 +967,12 @@ private fun ArtistRowItem(
             .padding(horizontal = 16.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Surface(
-            modifier = Modifier.size(56.dp),
-            shape = CircleShape,
-            color = KaonSurfaceElevated
-        ) {
-            Icon(
-                imageVector = Icons.Default.Person,
-                contentDescription = null,
-                tint = KaonPrimary,
-                modifier = Modifier.padding(14.dp)
-            )
-        }
+        ArtworkImage(
+            artistName = artist.name,
+            isArtist = true,
+            cornerRadius = 28.dp,
+            modifier = Modifier.size(56.dp)
+        )
 
         Spacer(modifier = Modifier.width(14.dp))
 

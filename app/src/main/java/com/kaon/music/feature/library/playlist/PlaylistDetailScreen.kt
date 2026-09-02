@@ -54,15 +54,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.kaon.music.core.data.model.Playlist
 import com.kaon.music.core.data.model.Track
 import com.kaon.music.core.designsystem.component.EmptyStateView
-import com.kaon.music.core.designsystem.component.TrackItem
 import com.kaon.music.core.designsystem.component.formatDuration
 import com.kaon.music.core.designsystem.theme.KaonBackground
 import com.kaon.music.core.designsystem.theme.KaonPrimary
-import com.kaon.music.core.designsystem.theme.KaonSurfaceElevated
 import com.kaon.music.core.designsystem.theme.KaonTextPrimary
 import com.kaon.music.core.designsystem.theme.KaonTextSecondary
 import com.kaon.music.core.designsystem.theme.KaonTextTertiary

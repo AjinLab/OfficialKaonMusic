@@ -8,13 +8,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Person
-import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -24,8 +19,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.kaon.music.core.data.model.Artist
-import com.kaon.music.core.designsystem.theme.KaonPrimary
-import com.kaon.music.core.designsystem.theme.KaonSurfaceElevated
+import com.kaon.music.core.designsystem.component.ArtworkImage
 import com.kaon.music.core.designsystem.theme.KaonTextPrimary
 import com.kaon.music.core.designsystem.theme.KaonTextSecondary
 
@@ -43,18 +37,12 @@ fun ArtistListItem(
             .padding(horizontal = 16.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Surface(
-            modifier = Modifier.size(48.dp),
-            shape = CircleShape,
-            color = KaonSurfaceElevated
-        ) {
-            Icon(
-                imageVector = Icons.Default.Person,
-                contentDescription = null,
-                tint = KaonPrimary,
-                modifier = Modifier.padding(12.dp)
-            )
-        }
+        ArtworkImage(
+            artistName = artist.name,
+            isArtist = true,
+            cornerRadius = 24.dp,
+            modifier = Modifier.size(48.dp)
+        )
 
         Spacer(modifier = Modifier.width(16.dp))
 

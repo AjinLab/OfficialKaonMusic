@@ -9,7 +9,6 @@ import com.metrolist.innertube.models.YouTubeLocale
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.firstOrNull
-import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import timber.log.Timber
 import java.util.Locale
@@ -31,11 +30,11 @@ class YouTubeSessionManager(
     }
 
     private fun initializeSession() {
-        // Set locale from device settings
+        // InnerTube expects the region and a BCP-47 language tag, not just the language code.
         val deviceLocale = Locale.getDefault()
         YouTube.locale = YouTubeLocale(
             gl = deviceLocale.country.ifBlank { "US" },
-            hl = deviceLocale.language.ifBlank { "en" }
+            hl = deviceLocale.toLanguageTag().ifBlank { "en-US" },
         )
 
         scope.launch {
@@ -50,6 +49,17 @@ class YouTubeSessionManager(
                 if (!savedCookie.isNullOrBlank()) {
                     YouTube.cookie = savedCookie
                 }
+
+                // A visitor token is required by web clients and by the web PO-token flow. Fetch
+                // one during application startup when there is no persisted token so the first
+                // playback/search request does not race the bootstrap.
+                if (savedVisitorData.isNullOrBlank()) {
+                    YouTube.visitorData()
+                        .onSuccess(::saveVisitorData)
+                        .onFailure { error ->
+                            Timber.w(error, "Failed to bootstrap YouTube visitor data")
+                        }
+                }
             } catch (e: Exception) {
                 Timber.w(e, "Failed to load saved YouTube session preferences")
             }
@@ -57,18 +67,22 @@ class YouTubeSessionManager(
     }
 
     fun saveVisitorData(visitorData: String) {
-        YouTube.visitorData = visitorData
+        val normalized = visitorData.trim()
+        if (normalized.isBlank()) return
+
+        YouTube.visitorData = normalized
         scope.launch {
-            context.dataStore.edit { it[visitorDataKey] = visitorData }
+            context.dataStore.edit { it[visitorDataKey] = normalized }
         }
     }
 
     fun saveCookie(cookie: String?) {
-        YouTube.cookie = cookie
+        val normalized = cookie?.trim()?.takeIf { it.isNotBlank() }
+        YouTube.cookie = normalized
         scope.launch {
             context.dataStore.edit {
-                if (cookie != null) {
-                    it[cookieKey] = cookie
+                if (normalized != null) {
+                    it[cookieKey] = normalized
                 } else {
                     it.remove(cookieKey)
                 }

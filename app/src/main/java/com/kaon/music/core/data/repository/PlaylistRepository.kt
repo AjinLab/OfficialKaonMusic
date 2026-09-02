@@ -216,7 +216,10 @@ class PlaylistRepository(
             dateAdded = dateAdded,
             contentUri = uri,
             isFavorite = isFavorite,
-            isMissing = isMissing
+            isMissing = isMissing,
+            source = source,
+            youtubeVideoId = youtubeVideoId,
+            mimeType = mimeType
         )
     }
 }

@@ -135,6 +135,7 @@ dependencies {
     implementation(libs.androidx.media3.session)
     implementation(libs.androidx.media3.ui)
     implementation(libs.androidx.media3.datasource.okhttp)
+    implementation("org.jellyfin.media3:media3-ffmpeg-decoder:1.5.0+1")
 
     // Room
     implementation(libs.androidx.room.runtime)
@@ -152,6 +153,9 @@ dependencies {
 
     // Logging
     implementation(libs.timber)
+
+    // MusicMeta metadata enrichment engine
+    implementation("io.github.famesjranko:musicmeta-core:0.9.2")
 
     // Profile Installer for Baseline Profiles
     implementation("androidx.profileinstaller:profileinstaller:1.4.1")
@@ -171,4 +175,24 @@ dependencies {
 
 tasks.matching { it.name.startsWith("check") && it.name.endsWith("AarMetadata") }.configureEach {
     enabled = false
+}
+
+// Unit tests for the streaming/internetworking layer load classes from the `innertubex`
+// dependency, which ships Java 21+ bytecode, while the build is pinned to JDK 17
+// (org.gradle.java.home). Only the test JVMs therefore run on a newer toolchain
+// (first of 21/25 found); compilation and the Gradle daemon stay on JDK 17.
+val testToolchainLauncher = listOf(21, 25).firstNotNullOfOrNull { version ->
+    try {
+        javaToolchains.launcherFor {
+            languageVersion.set(org.gradle.jvm.toolchain.JavaLanguageVersion.of(version))
+        }.takeIf { it.isPresent }
+    } catch (_: Exception) {
+        null
+    }
+}
+
+if (testToolchainLauncher != null) {
+    tasks.withType(org.gradle.api.tasks.testing.Test::class.java).configureEach {
+        javaLauncher.set(testToolchainLauncher)
+    }
 }

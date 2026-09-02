@@ -24,7 +24,10 @@ enum class SizeBucket(val sizePx: Int) {
  * - API 26-28: Uses legacy content://media/external/audio/albumart Uri.
  * - Requests are size-aware to prevent OOM/jank in large track lists.
  */
-class ArtworkResolver(private val context: Context) {
+class ArtworkResolver(
+    private val context: Context,
+    private val metadataRepository: com.kaon.music.core.data.repository.MetadataRepository? = null
+) {
 
     private val legacyAlbumArtBaseUri = Uri.parse("content://media/external/audio/albumart")
 
@@ -40,6 +43,21 @@ class ArtworkResolver(private val context: Context) {
      */
     fun getLegacyAlbumArtUri(albumId: Long): Uri {
         return ContentUris.withAppendedId(legacyAlbumArtBaseUri, albumId)
+    }
+
+    /**
+     * Obtains the platform-appropriate artwork Uri for a given album.
+     */
+    fun getAlbumArtUri(albumId: Long): Uri? {
+        if (albumId <= 0) return null
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            ContentUris.withAppendedId(
+                android.provider.MediaStore.Audio.Albums.EXTERNAL_CONTENT_URI,
+                albumId
+            )
+        } else {
+            getLegacyAlbumArtUri(albumId)
+        }
     }
 
     /**
@@ -65,6 +83,36 @@ class ArtworkResolver(private val context: Context) {
         } else {
             // On legacy API 26-28, return null here; Coil handles the content URI directly
             null
+        }
+    }
+
+    /**
+     * Resolves online album cover art via Cover Art Archive -> Deezer -> iTunes -> Fanart.tv.
+     */
+    suspend fun resolveOnlineAlbumArt(albumTitle: String, artistName: String): String? {
+        return metadataRepository?.getAlbumCoverArtUrl(albumTitle, artistName)
+    }
+
+    /**
+     * Resolves online artist photo via Wikidata -> Fanart.tv -> Deezer -> Discogs -> Wikipedia.
+     */
+    suspend fun resolveArtistPhoto(artistName: String): String? {
+        return metadataRepository?.getArtistPhotoUrl(artistName)
+    }
+
+    companion object {
+        private val legacyBaseUri = Uri.parse("content://media/external/audio/albumart")
+
+        fun getAlbumArtUri(albumId: Long): Uri? {
+            if (albumId <= 0) return null
+            return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                ContentUris.withAppendedId(
+                    android.provider.MediaStore.Audio.Albums.EXTERNAL_CONTENT_URI,
+                    albumId
+                )
+            } else {
+                ContentUris.withAppendedId(legacyBaseUri, albumId)
+            }
         }
     }
 }

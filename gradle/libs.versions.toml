@@ -20,7 +20,7 @@ ktor = "3.1.0"
 kotlinxSerialization = "1.7.3"
 brotli = "0.1.2"
 desugaring = "2.1.4"
-extractor = "3cd3341"
+extractor = "v0.24.4"
 innertubex = "v0.1.2"
 
 [libraries]
@@ -70,7 +70,7 @@ ktor-serialization-json = { group = "io.ktor", name = "ktor-serialization-kotlin
 kotlinx-serialization-json = { group = "org.jetbrains.kotlinx", name = "kotlinx-serialization-json", version.ref = "kotlinxSerialization" }
 brotli = { group = "org.brotli", name = "dec", version.ref = "brotli" }
 desugaring = { group = "com.android.tools", name = "desugar_jdk_libs_nio", version.ref = "desugaring" }
-extractor = { module = "com.github.TeamNewPipe:NewPipeExtractor", version = "v0.24.4" }
+extractor = { module = "com.github.TeamNewPipe:NewPipeExtractor", version.ref = "extractor" }
 innertubex = { module = "com.github.MetrolistGroup.innertubex:innertubex", version.ref = "innertubex" }
 
 [plugins]

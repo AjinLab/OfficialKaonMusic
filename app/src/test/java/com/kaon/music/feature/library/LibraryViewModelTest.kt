@@ -462,4 +462,5 @@ private class FakeVmPlayEventDao : PlayEventDao {
     override suspend fun getRecentlyPlayedTrackEntities(limit: Int): List<TrackEntity> = emptyList()
     override fun observeMostPlayedTrackEntities(limit: Int): Flow<List<TrackEntity>> = flowOf(emptyList())
     override suspend fun getMostPlayedTrackEntities(limit: Int): List<TrackEntity> = emptyList()
+    override suspend fun clearAllEvents(): Int = 0
 }

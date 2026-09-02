@@ -74,4 +74,69 @@ object YtItemMapper {
             trackCount = playlist.songCountText?.filter { it.isDigit() }?.toIntOrNull() ?: 0
         )
     }
+
+    fun playlistItemToOnlinePlaylist(playlist: PlaylistItem): com.kaon.music.core.data.model.OnlinePlaylist {
+        return com.kaon.music.core.data.model.OnlinePlaylist(
+            playlistId = playlist.id,
+            title = playlist.title,
+            author = playlist.author?.name ?: "YouTube Music",
+            songCountText = playlist.songCountText,
+            thumbnailUri = playlist.thumbnail?.let { Uri.parse(it) }
+        )
+    }
+
+    fun ytItemToTopResult(item: YTItem): com.kaon.music.core.data.model.TopResultItem? {
+        return when (item) {
+            is SongItem -> {
+                val track = songItemToTrack(item)
+                val type = if (item.isVideoSong) com.kaon.music.core.data.model.TopResultType.VIDEO else com.kaon.music.core.data.model.TopResultType.SONG
+                val subtitle = "${if (item.isVideoSong) "Video" else "Song"} • ${track.artist}"
+                com.kaon.music.core.data.model.TopResultItem(
+                    id = item.id,
+                    title = track.title,
+                    subtitle = subtitle,
+                    type = type,
+                    thumbnailUri = track.contentUri,
+                    track = track
+                )
+            }
+            is AlbumItem -> {
+                val album = albumItemToAlbum(item)
+                val subtitle = "Album • ${album.artist}${if (album.year > 0) " • ${album.year}" else ""}"
+                com.kaon.music.core.data.model.TopResultItem(
+                    id = item.id,
+                    title = album.title,
+                    subtitle = subtitle,
+                    type = com.kaon.music.core.data.model.TopResultType.ALBUM,
+                    thumbnailUri = item.thumbnail?.let { Uri.parse(it) },
+                    album = album
+                )
+            }
+            is ArtistItem -> {
+                val artist = artistItemToArtist(item)
+                val subtitle = if (item.isProfile) "Profile" else "Artist"
+                com.kaon.music.core.data.model.TopResultItem(
+                    id = item.id,
+                    title = artist.name,
+                    subtitle = subtitle,
+                    type = com.kaon.music.core.data.model.TopResultType.ARTIST,
+                    thumbnailUri = item.thumbnail?.let { Uri.parse(it) },
+                    artist = artist
+                )
+            }
+            is PlaylistItem -> {
+                val pl = playlistItemToOnlinePlaylist(item)
+                val subtitle = "Playlist • ${pl.author}${if (!pl.songCountText.isNullOrBlank()) " • ${pl.songCountText}" else ""}"
+                com.kaon.music.core.data.model.TopResultItem(
+                    id = item.id,
+                    title = pl.title,
+                    subtitle = subtitle,
+                    type = com.kaon.music.core.data.model.TopResultType.PLAYLIST,
+                    thumbnailUri = pl.thumbnailUri,
+                    playlist = pl
+                )
+            }
+            else -> null
+        }
+    }
 }

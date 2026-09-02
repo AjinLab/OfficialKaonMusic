@@ -82,6 +82,9 @@ interface PlayEventDao {
     """)
     suspend fun getMostPlayedTrackEntities(limit: Int = 100): List<com.kaon.music.core.data.db.entity.TrackEntity>
 
+    @Query("DELETE FROM play_events")
+    suspend fun clearAllEvents(): Int
+
     data class TrackPlayCount(
         val track_id: Long,
         val play_count: Long

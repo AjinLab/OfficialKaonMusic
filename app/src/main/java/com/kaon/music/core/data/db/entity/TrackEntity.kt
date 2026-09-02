@@ -92,6 +92,9 @@ data class TrackEntity(
     @ColumnInfo(name = "youtube_video_id")
     val youtubeVideoId: String? = null,
 
+    @ColumnInfo(name = "mime_type")
+    val mimeType: String? = null,
+
     @ColumnInfo(name = "last_seen_timestamp")
     val lastSeenTimestamp: Long = System.currentTimeMillis()
 )

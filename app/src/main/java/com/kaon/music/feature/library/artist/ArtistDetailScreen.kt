@@ -2,7 +2,6 @@ package com.kaon.music.feature.library.artist
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -17,17 +16,14 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -38,10 +34,10 @@ import androidx.compose.ui.unit.dp
 import com.kaon.music.core.data.model.Album
 import com.kaon.music.core.data.model.Artist
 import com.kaon.music.core.data.model.Track
+import com.kaon.music.core.designsystem.component.ArtworkImage
 import com.kaon.music.core.designsystem.component.TrackItem
 import com.kaon.music.core.designsystem.theme.KaonBackground
 import com.kaon.music.core.designsystem.theme.KaonPrimary
-import com.kaon.music.core.designsystem.theme.KaonSurfaceElevated
 import com.kaon.music.core.designsystem.theme.KaonTextPrimary
 import com.kaon.music.core.designsystem.theme.KaonTextSecondary
 import com.kaon.music.feature.library.album.AlbumGridItem
@@ -60,9 +56,9 @@ fun ArtistDetailScreen(
     onFavoriteToggle: (Long) -> Unit,
     onPlayNext: (Track) -> Unit,
     onAddToQueue: (Track) -> Unit,
-    onAddToPlaylist: (Track) -> Unit = {},
     bottomPadding: PaddingValues,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onAddToPlaylist: (Track) -> Unit = {}
 ) {
     BackHandler(onBack = onBack)
 
@@ -107,18 +103,12 @@ fun ArtistDetailScreen(
                         .padding(horizontal = 24.dp, vertical = 12.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    Surface(
-                        modifier = Modifier.size(100.dp),
-                        shape = CircleShape,
-                        color = KaonSurfaceElevated
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Person,
-                            contentDescription = null,
-                            tint = KaonPrimary,
-                            modifier = Modifier.padding(24.dp)
-                        )
-                    }
+                    ArtworkImage(
+                        artistName = artist.name,
+                        isArtist = true,
+                        cornerRadius = 50.dp,
+                        modifier = Modifier.size(100.dp)
+                    )
 
                     Spacer(modifier = Modifier.height(16.dp))
 

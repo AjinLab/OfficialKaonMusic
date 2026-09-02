@@ -222,13 +222,17 @@ class TrackRepository(
     suspend fun getTracksByIds(trackIds: List<Long>): List<Track> {
         val entities = trackDao.getTracksByIds(trackIds)
         val entitiesById = entities.associateBy { it.trackId }
+        val favSet = favoriteDao.getFavoriteTrackIds().toSet()
         // Preserve input order
         return trackIds.mapNotNull { id ->
-            entitiesById[id]?.toDomainModel(isFavorite = false)
+            entitiesById[id]?.toDomainModel(isFavorite = favSet.contains(id))
         }
     }
 
     suspend fun toggleFavorite(trackId: Long) {
+        // Search results from YouTube are playable queue-only tracks and do not
+        // have a local Room row to satisfy the FavoriteTrack foreign key.
+        if (trackDao.getTrackById(trackId) == null) return
         if (favoriteDao.isFavorite(trackId)) {
             favoriteDao.removeFavorite(trackId)
         } else {
@@ -240,8 +244,8 @@ class TrackRepository(
         return favoriteDao.observeIsFavorite(trackId)
     }
 
-    suspend fun syncLibrary(): SyncResult {
-        return syncEngine.synchronize()
+    suspend fun syncLibrary(minDurationMs: Long = 5000L): SyncResult {
+        return syncEngine.synchronize(minDurationMs = minDurationMs)
     }
 
     private fun TrackEntity.toDomainModel(isFavorite: Boolean): Track {
@@ -275,7 +279,8 @@ class TrackRepository(
             isFavorite = isFavorite,
             isMissing = isMissing,
             source = source,
-            youtubeVideoId = youtubeVideoId
+            youtubeVideoId = youtubeVideoId,
+            mimeType = mimeType
         )
     }
 }

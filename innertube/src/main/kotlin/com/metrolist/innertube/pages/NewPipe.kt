@@ -5,6 +5,7 @@ import com.metrolist.innertube.models.response.PlayerResponse
 import io.ktor.http.URLBuilder
 import io.ktor.http.parseQueryString
 import okhttp3.OkHttpClient
+import okhttp3.Response as OkHttpResponse
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.schabi.newpipe.extractor.NewPipe
 import org.schabi.newpipe.extractor.downloader.Downloader
@@ -23,15 +24,16 @@ private class NewPipeDownloaderImpl(
 ) : Downloader() {
     private fun normalizeResponseBody(
         url: String,
-        body: String?,
+        body: ByteArray?,
     ): String? {
+        val bodyText = body?.toString(Charsets.UTF_8)
         if (!url.contains("returnyoutubedislikeapi.com", ignoreCase = true)) {
-            return body
+            return bodyText
         }
 
-        val trimmed = body?.trimStart().orEmpty()
+        val trimmed = bodyText?.trimStart().orEmpty()
         if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
-            return body
+            return bodyText
         }
 
         return "{\"likes\":0,\"dislikes\":0,\"viewCount\":0}"
@@ -42,29 +44,27 @@ private class NewPipeDownloaderImpl(
             .Builder()
             .proxy(proxy)
             .proxyAuthenticator { _, response ->
-                proxyAuth?.let { auth ->
+                proxyAuth?.takeIf { response.request.header("Proxy-Authorization") == null }?.let { auth ->
                     response.request
                         .newBuilder()
                         .header("Proxy-Authorization", auth)
                         .build()
-                } ?: response.request
+                }
             }.build()
 
     @Throws(IOException::class, ReCaptchaException::class)
     override fun execute(request: Request): Response {
-        val httpMethod = request.httpMethod()
-        val url = request.url()
-        val headers = request.headers()
-        val dataToSend = request.dataToSend()
+        val response = client.newCall(toOkHttpRequest(request)).execute()
+        return response.use { toNewPipeResponse(request.url(), it) }
+    }
 
-        val requestBuilder =
-            okhttp3.Request
-                .Builder()
-                .method(httpMethod, dataToSend?.toRequestBody())
-                .url(url)
-                .addHeader("User-Agent", YouTubeClient.USER_AGENT_WEB)
+    private fun toOkHttpRequest(request: Request): okhttp3.Request {
+        val requestBuilder = okhttp3.Request.Builder()
+            .method(request.httpMethod(), request.dataToSend()?.toRequestBody())
+            .url(request.url())
+            .addHeader("User-Agent", YouTubeClient.USER_AGENT_WEB)
 
-        headers.forEach { (headerName, headerValueList) ->
+        request.headers().forEach { (headerName, headerValueList) ->
             if (headerValueList.size > 1) {
                 requestBuilder.removeHeader(headerName)
                 headerValueList.forEach { headerValue ->
@@ -74,23 +74,23 @@ private class NewPipeDownloaderImpl(
                 requestBuilder.header(headerName, headerValueList[0])
             }
         }
+        return requestBuilder.build()
+    }
 
-        val response = client.newCall(requestBuilder.build()).execute()
-
+    @Throws(IOException::class, ReCaptchaException::class)
+    private fun toNewPipeResponse(requestUrl: String, response: OkHttpResponse): Response {
         if (response.code == 429) {
-            response.close()
-
-            throw ReCaptchaException("reCaptcha Challenge requested", url)
+            throw ReCaptchaException("reCaptcha Challenge requested", requestUrl)
         }
 
         val latestUrl = response.request.url.toString()
-        val responseBodyToReturn = normalizeResponseBody(latestUrl, response.body?.string().orEmpty())
+        val responseBytes = response.body?.bytes()
         return Response(
             response.code,
             response.message,
             response.headers.toMultimap(),
-            responseBodyToReturn,
-            latestUrl
+            normalizeResponseBody(latestUrl, responseBytes),
+            latestUrl,
         )
     }
 }

@@ -26,7 +26,6 @@ import com.kaon.music.core.designsystem.theme.KaonPrimary
 import com.kaon.music.core.designsystem.theme.KaonSurfaceElevated
 import com.kaon.music.core.designsystem.theme.KaonTextPrimary
 import com.kaon.music.core.designsystem.theme.KaonTextSecondary
-import com.kaon.music.core.designsystem.theme.KaonTextTertiary
 
 /**
  * Universal Actionable Empty State component.
@@ -37,9 +36,9 @@ fun EmptyStateView(
     icon: ImageVector,
     title: String,
     message: String,
+    modifier: Modifier = Modifier,
     actionLabel: String? = null,
-    onActionClick: (() -> Unit)? = null,
-    modifier: Modifier = Modifier
+    onActionClick: (() -> Unit)? = null
 ) {
     Box(
         modifier = modifier

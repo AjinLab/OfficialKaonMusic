@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.MoreVert
@@ -20,6 +21,7 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -33,10 +35,12 @@ import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.kaon.music.core.artwork.SizeBucket
 import com.kaon.music.core.data.model.Track
 import com.kaon.music.core.designsystem.theme.KaonHeartRed
 import com.kaon.music.core.designsystem.theme.KaonPrimary
+import com.kaon.music.core.designsystem.theme.KaonSurfaceElevated
 import com.kaon.music.core.designsystem.theme.KaonTextPrimary
 import com.kaon.music.core.designsystem.theme.KaonTextSecondary
 import com.kaon.music.core.designsystem.theme.KaonTextTertiary
@@ -50,11 +54,11 @@ fun TrackItem(
     isCurrent: Boolean,
     onClick: () -> Unit,
     onFavoriteToggle: () -> Unit,
+    modifier: Modifier = Modifier,
     onPlayNext: (() -> Unit)? = null,
     onAddToQueue: (() -> Unit)? = null,
     onAddToPlaylist: (() -> Unit)? = null,
-    isOnline: Boolean = true,
-    modifier: Modifier = Modifier
+    isOnline: Boolean = true
 ) {
     val isItemDisabled = track.source == "YOUTUBE" && !isOnline
     val titleColor by animateColorAsState(
@@ -79,8 +83,7 @@ fun TrackItem(
         verticalAlignment = Alignment.CenterVertically
     ) {
         ArtworkImage(
-            albumId = track.albumId,
-            artworkUri = track.contentUri.takeIf { track.source == "YOUTUBE" },
+            track = track,
             sizeBucket = SizeBucket.THUMBNAIL,
             modifier = Modifier.size(52.dp),
             cornerRadius = 8.dp
@@ -101,13 +104,38 @@ fun TrackItem(
                 overflow = TextOverflow.Ellipsis
             )
 
-            Text(
-                text = if (isItemDisabled) "${track.displayArtist} • Requires internet" else "${track.displayArtist} • ${track.displayAlbum}",
-                style = MaterialTheme.typography.bodyMedium,
-                color = if (isItemDisabled) KaonTextTertiary else KaonTextSecondary,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = if (isItemDisabled) "${track.displayArtist} • Requires internet" else "${track.displayArtist} • ${track.displayAlbum}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = if (isItemDisabled) KaonTextTertiary else KaonTextSecondary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false)
+                )
+
+                val userSettings = com.kaon.music.core.designsystem.theme.LocalUserSettings.current
+                if (track.source != "YOUTUBE" && userSettings.showFormatBadges) {
+                    val isLosslessHighlight = track.isLossless && userSettings.showLosslessBadges
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Surface(
+                        shape = RoundedCornerShape(4.dp),
+                        color = if (isLosslessHighlight) KaonPrimary.copy(alpha = 0.18f) else KaonSurfaceElevated,
+                        modifier = Modifier.padding(top = 1.dp)
+                    ) {
+                        Text(
+                            text = track.audioFormatLabel.uppercase(),
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                fontSize = 9.sp,
+                                fontWeight = FontWeight.Bold,
+                                letterSpacing = 0.4.sp
+                            ),
+                            color = if (isLosslessHighlight) KaonPrimary else KaonTextTertiary,
+                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                        )
+                    }
+                }
+            }
         }
 
         Spacer(modifier = Modifier.width(8.dp))

@@ -3,6 +3,7 @@ package com.kaon.music.app.di
 import android.content.Context
 import com.kaon.music.core.artwork.ArtworkResolver
 import com.kaon.music.core.data.db.KaonDatabase
+import com.kaon.music.core.data.online.YouTubeSessionManager
 import com.kaon.music.core.data.repository.HistoryRepository
 import com.kaon.music.core.data.repository.TrackRepository
 import com.kaon.music.core.data.sync.MediaStoreScanner
@@ -17,6 +18,10 @@ import com.kaon.music.core.playback.PlaybackFacade
  * - Centralizes database, sync engine, repositories, and the process-scoped PlaybackFacade.
  */
 class AppContainer(private val context: Context) {
+
+    val youtubeSessionManager: YouTubeSessionManager by lazy {
+        YouTubeSessionManager(context)
+    }
 
     val database: KaonDatabase by lazy {
         KaonDatabase.getInstance(context)
@@ -44,7 +49,8 @@ class AppContainer(private val context: Context) {
 
     val historyRepository: HistoryRepository by lazy {
         HistoryRepository(
-            playEventDao = database.playEventDao()
+            playEventDao = database.playEventDao(),
+            trackDao = database.trackDao()
         )
     }
 
@@ -57,7 +63,17 @@ class AppContainer(private val context: Context) {
     }
 
     val artworkResolver: ArtworkResolver by lazy {
-        ArtworkResolver(context)
+        ArtworkResolver(context, metadataRepository)
+    }
+
+    val settingsRepository: com.kaon.music.core.data.repository.SettingsRepository by lazy {
+        com.kaon.music.core.data.repository.SettingsRepository(context)
+    }
+
+    val metadataRepository: com.kaon.music.core.data.repository.MetadataRepository by lazy {
+        com.kaon.music.core.data.repository.MetadataRepositoryImpl(
+            settingsRepository = settingsRepository
+        )
     }
 
     val playbackFacade: PlaybackFacade by lazy {

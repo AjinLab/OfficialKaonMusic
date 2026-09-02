@@ -57,9 +57,9 @@ fun LikedSongsScreen(
     onFavoriteToggle: (Long) -> Unit,
     onPlayNext: (Track) -> Unit,
     onAddToQueue: (Track) -> Unit,
-    onAddToPlaylist: (Track) -> Unit = {},
     bottomPadding: PaddingValues,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onAddToPlaylist: (Track) -> Unit = {}
 ) {
     BackHandler(onBack = onBack)
 

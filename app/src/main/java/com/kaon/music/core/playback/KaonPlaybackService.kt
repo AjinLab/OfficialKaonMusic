@@ -38,7 +38,11 @@ import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.datasource.ResolvingDataSource
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import com.kaon.music.core.data.online.YouTubeSessionManager
+import com.kaon.music.app.KaonApplication
 import kotlinx.coroutines.runBlocking
+
+import com.kaon.music.core.data.repository.SettingsRepository
+import com.kaon.music.core.data.repository.UserSettings
 
 /**
  * Android MediaSessionService hosting the ExoPlayer instance.
@@ -62,6 +66,9 @@ class KaonPlaybackService : MediaSessionService() {
     private lateinit var historyRepository: HistoryRepository
     private lateinit var snapshotManager: QueueSnapshotManager
     private lateinit var youtubeSessionManager: YouTubeSessionManager
+    private lateinit var settingsRepository: SettingsRepository
+
+    private var currentUserSettings: UserSettings = UserSettings()
 
     private var currentTrackId: Long? = null
     private var trackStartPlayTimestampMs: Long = 0L
@@ -77,9 +84,14 @@ class KaonPlaybackService : MediaSessionService() {
         val scanner = MediaStoreScanner(applicationContext)
         val syncEngine = SyncEngine(scanner, database.trackDao())
         trackRepository = TrackRepository(database.trackDao(), database.favoriteDao(), syncEngine, database.playEventDao())
-        historyRepository = HistoryRepository(database.playEventDao())
+        historyRepository = HistoryRepository(database.playEventDao(), database.trackDao())
         snapshotManager = QueueSnapshotManager(database.queueSnapshotDao(), serviceScope)
-        youtubeSessionManager = YouTubeSessionManager(applicationContext, serviceScope)
+        youtubeSessionManager =
+            (application as? KaonApplication)?.container?.youtubeSessionManager
+                ?: YouTubeSessionManager(applicationContext, serviceScope)
+        settingsRepository =
+            (application as? KaonApplication)?.container?.settingsRepository
+                ?: SettingsRepository(applicationContext)
 
         // 1. Build and configure ExoPlayer with ResolvingDataSource for online streams
         val audioAttributes = AudioAttributes.Builder()
@@ -110,32 +122,65 @@ class KaonPlaybackService : MediaSessionService() {
                         }.trim()
 
                         if (videoId.isNotBlank()) {
-                            val resolved = runBlocking {
-                                YouTubeStreamResolver.resolveStreamData(videoId).getOrNull()
+                            // Resolution failure must surface as a classified IO error, never as the
+                            // raw `youtube://` placeholder reaching the HTTP stack. ExoPlayer's bounded
+                            // load-error policy and the service error listener take it from there.
+                            val resolved = try {
+                                runBlocking {
+                                    YouTubeStreamResolver.resolveStreamData(
+                                        videoId = videoId,
+                                        quality = currentUserSettings.streamingQuality,
+                                        audioType = currentUserSettings.preferredAudioType,
+                                        wifiOnly = currentUserSettings.wifiOnlyStreaming
+                                    )
+                                }.getOrThrow()
+                            } catch (ce: kotlinx.coroutines.CancellationException) {
+                                // Loader thread interrupted (load cancelled by a skip/release);
+                                // abandon this open without an error cycle.
+                                null
+                            } catch (t: Throwable) {
+                                throw java.io.IOException("Stream resolution failed for video $videoId", t)
                             }
                             if (resolved != null && resolved.url.isNotBlank()) {
-                                val chunkLength = 512 * 1024L
                                 return dataSpec.buildUpon()
                                     .setUri(Uri.parse(resolved.url))
-                                    .setHttpRequestHeaders(dataSpec.httpRequestHeaders + resolved.headers)
+                                    .setHttpRequestHeaders(resolved.headers + dataSpec.httpRequestHeaders)
                                     .build()
-                                    .subrange(dataSpec.uriPositionOffset, chunkLength)
                             }
+                            throw java.io.IOException("Stream resolution returned no playable URL for video $videoId")
                         }
+                        throw java.io.IOException("Malformed stream placeholder URI: $uri")
                     }
                     return dataSpec
                 }
             }
         )
 
-        val dataSourceFactory = DefaultDataSource.Factory(this, resolvingDataSourceFactory)
-        val mediaSourceFactory = DefaultMediaSourceFactory(dataSourceFactory)
+        val renderersFactory = androidx.media3.exoplayer.DefaultRenderersFactory(this).apply {
+            setExtensionRendererMode(androidx.media3.exoplayer.DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER)
+            setEnableAudioTrackPlaybackParams(true)
+        }
 
-        player = ExoPlayer.Builder(this)
+        val dataSourceFactory = DefaultDataSource.Factory(this, resolvingDataSourceFactory)
+        val extractorsFactory = androidx.media3.extractor.DefaultExtractorsFactory().apply {
+            setConstantBitrateSeekingEnabled(true)
+        }
+        val mediaSourceFactory = DefaultMediaSourceFactory(dataSourceFactory, extractorsFactory)
+
+        player = ExoPlayer.Builder(this, renderersFactory)
             .setMediaSourceFactory(mediaSourceFactory)
             .setAudioAttributes(audioAttributes, true) // Media3 handles audio focus
             .setHandleAudioBecomingNoisy(true) // Media3 handles becoming noisy (pause on unplug)
             .build()
+
+        // Observe and apply user settings dynamically to ExoPlayer
+        serviceScope.launch {
+            settingsRepository.userSettingsFlow.collect { settings ->
+                currentUserSettings = settings
+                player.skipSilenceEnabled = settings.skipSilence
+                player.setAudioAttributes(audioAttributes, settings.pauseOnFocusLoss)
+            }
+        }
 
         // 2. Setup Activity pending intent for notification clicks (opens full player)
         val intent = Intent(this, MainActivity::class.java).apply {
@@ -200,8 +245,15 @@ class KaonPlaybackService : MediaSessionService() {
                     Timber.tag("PlaybackService").i("403/410 detected on YouTube video $videoId — invalidating cache and retrying with fallback client")
                     com.kaon.music.core.online.YTPlayerUtils.markWebRemixFailed(videoId)
                     YouTubeStreamResolver.invalidate(videoId)
-                    player.prepare()
-                    player.play()
+                    val currentPos = player.currentPosition
+                    val mediaItem = player.currentMediaItem
+                    if (mediaItem != null) {
+                        val index = player.currentMediaItemIndex
+                        player.replaceMediaItem(index, mediaItem)
+                        player.seekTo(index, currentPos)
+                        player.prepare()
+                        player.play()
+                    }
                     return
                 }
 
@@ -329,6 +381,7 @@ class KaonPlaybackService : MediaSessionService() {
     }
 
     private fun checkAndRecordPlayEvent(isTransition: Boolean) {
+        if (!currentUserSettings.recordHistory) return
         val trackId = currentTrackId ?: return
         if (hasRecordedCurrentTrackPlayEvent) return
 

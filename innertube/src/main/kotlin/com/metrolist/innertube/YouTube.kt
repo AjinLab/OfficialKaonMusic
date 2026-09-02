@@ -134,6 +134,8 @@ object YouTube {
             innerTube.useLoginForBrowse = value
         }
 
+    fun extractionTransport(): InnerTube.ExtractionTransport = innerTube.extractionTransport()
+
     suspend fun searchSuggestions(query: String): Result<SearchSuggestions> =
         runCatching {
             val response = innerTube.getSearchSuggestions(WEB_REMIX, query).body<GetSearchSuggestionsResponse>()

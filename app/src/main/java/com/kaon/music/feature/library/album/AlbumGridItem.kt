@@ -37,6 +37,8 @@ fun AlbumGridItem(
     ) {
         ArtworkImage(
             albumId = album.albumId,
+            album = album.title,
+            artist = album.artist,
             sizeBucket = SizeBucket.FULL,
             modifier = Modifier
                 .fillMaxWidth()
