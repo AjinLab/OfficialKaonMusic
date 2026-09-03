@@ -257,7 +257,43 @@ Rules:
   through with an error that looks like an expired URL.
 - A second provider requires only a second implementation behind the same resolver policy.
 
-### 7.1 Re-syncing from upstream
+### 7.1 The fast path
+
+A normal track start must not retrieve `player.js`, execute JavaScript, or mint a PoToken. That is a
+property of InnerTubeX's client catalog, not of Kaon code: its highest-scoring playback client
+(`VISIONOS_0_1`) declares `signatureCipher=NEVER`, `nTransform=NEVER`, `webView=NONE`, and
+`poToken=NONE`, and returns a progressive URL Media3 can open directly.
+
+```
+Track (already carries its videoId from search)
+  → StreamSourceCache hit?                    → done, no network
+  → rate-limit + Wi-Fi gate
+  → InnerTubeX: VISIONOS direct URL           ← no player.js, no QuickJS, no WebView
+  → absolute expiry from the CDN `expire` param
+  → DataSpec (+ bounded range when required)  → Media3
+```
+
+Cipher and PoToken clients remain in the ladder below it; they are reached only when the cheap client
+fails. `ExtractionFastPathTest` asserts this ordering, because a dependency bump could reorder the
+catalog and reintroduce hundreds of milliseconds per resolve with no compile error.
+
+Kaon does not implement a track→video search step: a YouTube `Track` is only ever produced from a
+search result, so it already carries its `videoId` (`YtItemMapper`). The durable half of that identity
+is persisted in the queue snapshot, so a streamed queue survives process death.
+
+### 7.2 Resolution purpose
+
+Foreground playback and speculative pre-resolution share one extractor and one rate-limit window, so
+they are distinguished by `ResolvePurpose`:
+
+- `PLAYBACK` — the user is waiting. Never yields, never skipped.
+- `PREFETCH` — skipped entirely while any foreground resolution is in flight, and skipped when fewer
+  than 8 rate-limit slots remain.
+
+Purpose is deliberately **not** part of the coalescing key: a prefetch and a playback request for the
+same track must converge on one extraction, and the prefetch result must be reusable.
+
+### 7.3 Re-syncing from upstream
 
 `:innertube`, `core/online/potoken`, and the `innertubex` version are re-synced from
 `github.com/MetrolistGroup/Metrolist` rather than patched locally. On re-sync:
@@ -266,7 +302,8 @@ Rules:
    the package declaration and the `BuildConfig` import.
 2. Re-apply Kaon's redaction at the PoToken log sites (§5.3). Upstream logs the raw BotGuard response.
 3. Re-check `YouTubeStreamExtractor` against the `InnerTubeExtractor` / `TokenProvider` signatures.
-4. Copy upstream's `innertube` tests; do not maintain Kaon-local forks of them.
+4. Run `ExtractionFastPathTest` — it fails if the client ordering regressed.
+5. Copy upstream's `innertube` tests; do not maintain Kaon-local forks of them.
 
 
 ---

@@ -51,6 +51,7 @@ class ArchitectureBoundaryTest {
                 "com.metrolist.innertubex.extraction.TokenProvider",
                 "com.metrolist.innertube.models.response",
                 "com.metrolist.innertubex.extraction.ContentHints",
+                "com.metrolist.innertubex.extraction.strategy",
                 "com.kaon.music.core.online.potoken"
             )
         ),

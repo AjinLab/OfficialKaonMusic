@@ -14,11 +14,13 @@ import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.kaon.music.core.playback.ResolutionMetrics
 import com.kaon.music.core.playback.YouTubeStreamResolver
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -170,5 +172,47 @@ class YouTubeLiveStreamingTest {
 
         assertTrue("Playback position did not reach 10s (was ${elapsedPlayTimeMs}ms)", elapsedPlayTimeMs >= 10_000L)
         assertNull("Playback encountered error during 10s playback: ${playbackError.get()?.message}", playbackError.get())
+    }
+
+    /**
+     * Measures the resolution stages the fast path is supposed to eliminate.
+     *
+     * Requires a device and network: the expensive stages (player request, cipher solve, PoToken mint)
+     * live inside InnerTubeX, so only a live run can show whether the first attempt actually avoids
+     * them. Reports timings and the outcome histogram rather than asserting a threshold, because a
+     * wall-clock budget would make this test a flake on a slow network.
+     */
+    @Test
+    fun measureFastPathResolutionLatency() = runBlocking {
+        ResolutionMetrics.reset()
+
+        val coldStart = System.currentTimeMillis()
+        val cold = YouTubeStreamResolver.resolveStreamData(TEST_VIDEO_ID)
+        val coldMs = System.currentTimeMillis() - coldStart
+        assertTrue("cold resolution failed: ${cold.exceptionOrNull()?.message}", cold.isSuccess)
+
+        val warmStart = System.currentTimeMillis()
+        val warm = YouTubeStreamResolver.resolveStreamData(TEST_VIDEO_ID)
+        val warmMs = System.currentTimeMillis() - warmStart
+        assertTrue(warm.isSuccess)
+
+        val resolved = cold.getOrThrow()
+        android.util.Log.i(
+            "TEST_STREAM",
+            "resolution client=${resolved.clientName} cold=${coldMs}ms warm=${warmMs}ms " +
+                "ttl=${resolved.expiresInSeconds}s boundedRange=${resolved.requireBoundedRange} " +
+                "metrics=[${ResolutionMetrics.summary()}]"
+        )
+
+        assertEquals(
+            "the second resolution must be a cache hit, not another extraction",
+            1L,
+            ResolutionMetrics.count(ResolutionMetrics.CACHE_HIT)
+        )
+        assertTrue("a warm hit should be effectively free, was ${warmMs}ms", warmMs < coldMs)
+    }
+
+    private companion object {
+        const val TEST_VIDEO_ID = "dQw4w9WgXcQ"
     }
 }

@@ -15,15 +15,3 @@ data class PlayEvent(
         SKIP
     }
 }
-
-/**
- * Snapshot of the playback queue persisted to Room across process death.
- */
-data class QueueSnapshot(
-    val trackIds: List<Long>,
-    val currentIndex: Int,
-    val currentPositionMs: Long,
-    val isShuffleEnabled: Boolean,
-    val repeatMode: Int,
-    val timestamp: Long = System.currentTimeMillis()
-)

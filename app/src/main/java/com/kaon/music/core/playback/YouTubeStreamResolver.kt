@@ -22,6 +22,22 @@ import kotlin.random.Random
 /** Thrown when stream resolution requests exceed the allowed window quota. */
 class RateLimitException(message: String) : Exception(message)
 
+/**
+ * Why a stream is being resolved.
+ *
+ * Foreground playback and speculative pre-resolution share one extractor and one rate-limit window,
+ * so they must be distinguishable: a background pre-resolve must never consume the quota or the
+ * concurrency that the track the user just tapped needs. WAVE hit exactly this contention and
+ * responded by disabling pre-resolution outright; Kaon bounds it instead.
+ */
+enum class ResolvePurpose {
+    /** The user is waiting. Always allowed, never yields. */
+    PLAYBACK,
+
+    /** Speculative warm-up for the next queue item. Yields to [PLAYBACK] and is skipped under load. */
+    PREFETCH
+}
+
 /** Thrown when stream resolution times out or fails permanently. */
 class StreamResolutionException(message: String, cause: Throwable? = null) : Exception(message, cause)
 
@@ -61,6 +77,12 @@ object YouTubeStreamResolver {
     private const val RETRY_BACKOFF_BASE_MS = 250L
     private const val RETRY_BACKOFF_JITTER_MS = 250L
     private const val MIN_STAGE_MS = 2_000L
+
+    /**
+     * Rate-limit slots reserved for foreground playback. A prefetch runs only while at least this
+     * many acquisitions remain in the current window.
+     */
+    private const val PREFETCH_QUOTA_HEADROOM = 8
 
     // ==================== Injectable seams (production defaults; swapped in tests) ====================
 
@@ -124,6 +146,15 @@ object YouTubeStreamResolver {
     private val cache = StreamSourceCache<ResolvedStreamData>(maxEntries = 200, currentTimeMillis = { clock() })
     private val rateLimiter = SlidingWindowRateLimiter(maxRequests = 30, windowMs = 60_000L, clock = { clock() })
 
+    /**
+     * Foreground resolutions currently in flight.
+     *
+     * A prefetch checks this and gives up rather than queueing behind — or worse, ahead of — the
+     * track the user is waiting for. Prefetch is speculative by definition, so skipping it costs
+     * nothing; delaying playback costs the user.
+     */
+    private val foregroundInFlight = java.util.concurrent.atomic.AtomicInteger(0)
+
     internal fun resetForTesting(
         extraction: StreamExtractionApi = defaultExtractionApi,
         clockFn: () -> Long = System::currentTimeMillis,
@@ -135,6 +166,8 @@ object YouTubeStreamResolver {
         connectivityManagerProvider = connectivity
         cache.clear()
         rateLimiter.reset(rateLimiterMax)
+        foregroundInFlight.set(0)
+        ResolutionMetrics.reset()
     }
 
     /**
@@ -165,17 +198,33 @@ object YouTubeStreamResolver {
         videoId: String,
         quality: AudioQuality = AudioQuality.AUTO,
         audioType: AudioType = AudioType.AUTO,
-        wifiOnly: Boolean = false
+        wifiOnly: Boolean = false,
+        purpose: ResolvePurpose = ResolvePurpose.PLAYBACK
     ): Result<ResolvedStreamData> {
         val trimmedId = videoId.trim()
         if (trimmedId.isBlank()) return Result.failure(IllegalArgumentException("Invalid videoId: blank"))
+
+        // Key excludes purpose on purpose: a prefetch and a playback request for the same track and
+        // options must coalesce onto one extraction, and the prefetch result must be reusable by the
+        // subsequent playback request.
         val key = cacheKey(trimmedId, quality, audioType)
+
+        // Serve a warm entry without entering the coalescer at all — this is the cheapest path and
+        // the one a prefetch is trying to create.
+        cache.get(key)?.let { cached ->
+            ResolutionMetrics.record(ResolutionMetrics.CACHE_HIT, 0L)
+            return Result.success(cached)
+        }
+
+        if (purpose == ResolvePurpose.PLAYBACK) foregroundInFlight.incrementAndGet()
         return try {
-            coalescer.execute(key) { resolveUncoalesced(trimmedId, quality, audioType, wifiOnly) }
+            coalescer.execute(key) { resolveUncoalesced(trimmedId, quality, audioType, wifiOnly, purpose) }
         } catch (ce: CancellationException) {
             throw ce
         } catch (t: Throwable) {
             Result.failure(t)
+        } finally {
+            if (purpose == ResolvePurpose.PLAYBACK) foregroundInFlight.decrementAndGet()
         }
     }
 
@@ -196,8 +245,23 @@ object YouTubeStreamResolver {
         if (videoId.isNullOrBlank()) return
         val trimmedId = videoId.trim()
         if (cache.get(cacheKey(trimmedId, quality, audioType)) != null) return
+
+        // Foreground priority: never start speculative work while the user is waiting for a track.
+        // The next transition triggers pre-resolution again, so skipping here loses nothing.
+        if (foregroundInFlight.get() > 0) {
+            Timber.tag("resolve").d("Pre-resolve skipped for $trimmedId: foreground resolution in flight")
+            return
+        }
+
+        // Leave headroom in the rate-limit window for foreground requests. Spending the last of the
+        // quota on speculation is how a prefetch ends up rejecting the track the user then taps.
+        if (!rateLimiter.hasHeadroom(PREFETCH_QUOTA_HEADROOM)) {
+            Timber.tag("resolve").d("Pre-resolve skipped for $trimmedId: rate-limit headroom exhausted")
+            return
+        }
+
         try {
-            resolveStreamData(trimmedId, quality, audioType)
+            resolveStreamData(trimmedId, quality, audioType, purpose = ResolvePurpose.PREFETCH)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -219,8 +283,10 @@ object YouTubeStreamResolver {
         videoId: String,
         quality: AudioQuality,
         audioType: AudioType,
-        wifiOnly: Boolean
+        wifiOnly: Boolean,
+        purpose: ResolvePurpose
     ): Result<ResolvedStreamData> = withContext(Dispatchers.IO) {
+        val trace = ResolutionTrace(videoId, clock)
         val cm = connectivityManagerProvider()
 
         // Enforce the Wi-Fi gate before the cache: serving a cached URL is still network streaming,
@@ -234,6 +300,7 @@ object YouTubeStreamResolver {
                 )
             if (!isWifiOrEthernet) {
                 Timber.tag("resolve").w("Streaming blocked: Wi-Fi only enabled but device is not on Wi-Fi")
+                trace.log(ResolutionMetrics.WIFI_BLOCKED)
                 return@withContext Result.failure(
                     IllegalStateException("Wi-Fi only streaming is enabled in settings, but device is not connected to Wi-Fi.")
                 )
@@ -243,13 +310,17 @@ object YouTubeStreamResolver {
         val key = cacheKey(videoId, quality, audioType)
         val deadlineMs = clock() + RESOLUTION_BUDGET_MS
 
+        // Re-check after the Wi-Fi gate: a concurrent resolution may have populated the entry while
+        // this call was queued in the coalescer.
         cache.get(key)?.let { cached ->
-            Timber.tag("resolve").d("Cache hit for $videoId")
+            trace.log(ResolutionMetrics.CACHE_HIT)
             return@withContext Result.success(cached)
         }
+        trace.mark("cache-miss")
 
         if (!rateLimiter.tryAcquire()) {
-            Timber.tag("resolve").w("Rate limit exceeded for video $videoId")
+            Timber.tag("resolve").w("Rate limit exceeded for video $videoId (purpose=$purpose)")
+            trace.log(ResolutionMetrics.RATE_LIMITED)
             return@withContext Result.failure(RateLimitException("Too many requests. Please wait."))
         }
 
@@ -257,13 +328,21 @@ object YouTubeStreamResolver {
         // recovery, say), the stale completion cannot repopulate the cache with the rejected source.
         val generation = cache.generation(key)
 
-        val result = extractWithRetry(videoId, quality, audioType, cm, deadlineMs)
+        var attempts = 0
+        val result = extractWithRetry(videoId, quality, audioType, cm, deadlineMs) { attempts++ }
+        trace.mark("extract")
+
         val resolved = result.getOrElse { error ->
+            trace.log(ResolutionMetrics.FAILED)
             return@withContext Result.failure(error)
         }
 
         val expiresAtMs = calculateExpiryTimestampMs(resolved.url, resolved.expiresInSeconds)
         cache.put(key, resolved, expiresAtMs, generation)
+        trace.log(
+            outcome = if (attempts > 1) ResolutionMetrics.EXTRACTED_RETRY else ResolutionMetrics.EXTRACTED,
+            clientName = resolved.clientName
+        )
         Timber.tag("resolve").d(
             "Resolved $videoId client=${resolved.clientName} ttl=${(expiresAtMs - clock()) / 1000}s " +
                 "url=${Redact.url(resolved.url)}"
@@ -282,7 +361,8 @@ object YouTubeStreamResolver {
         quality: AudioQuality,
         audioType: AudioType,
         cm: ConnectivityManager?,
-        deadlineMs: Long
+        deadlineMs: Long,
+        onAttempt: () -> Unit = {}
     ): Result<ResolvedStreamData> {
         var lastFailure: Throwable? = null
         for (attempt in 0..1) {
@@ -290,6 +370,7 @@ object YouTubeStreamResolver {
             if (remaining < MIN_STAGE_MS) break
             val timeoutMs = min(if (attempt == 0) RESOLUTION_TIMEOUT_MS else RETRY_TIMEOUT_MS, remaining)
             try {
+                onAttempt()
                 return Result.success(
                     withTimeout(timeoutMs) { extractionApi.extract(videoId, quality, audioType, cm) }
                 )
@@ -397,6 +478,16 @@ internal class SlidingWindowRateLimiter(
         } else {
             false
         }
+    }
+
+    /** True when at least [slots] acquisitions remain in the current window. */
+    @Synchronized
+    fun hasHeadroom(slots: Int): Boolean {
+        val now = clock()
+        while (timestamps.isNotEmpty() && (now - timestamps.first()) > windowMs) {
+            timestamps.removeFirst()
+        }
+        return maxRequests - timestamps.size >= slots
     }
 
     @Synchronized

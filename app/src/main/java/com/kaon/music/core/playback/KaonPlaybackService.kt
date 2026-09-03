@@ -19,6 +19,7 @@ import com.google.common.util.concurrent.ListenableFuture
 import com.kaon.music.app.MainActivity
 import com.kaon.music.core.data.db.KaonDatabase
 import com.kaon.music.core.data.model.PlayEvent
+import com.kaon.music.core.data.model.QueueEntry
 import com.kaon.music.core.data.model.QueueSnapshot
 import com.kaon.music.core.data.repository.HistoryRepository
 import com.kaon.music.core.data.repository.TrackRepository
@@ -132,7 +133,10 @@ class KaonPlaybackService : MediaSessionService() {
                                         videoId = videoId,
                                         quality = currentUserSettings.streamingQuality,
                                         audioType = currentUserSettings.preferredAudioType,
-                                        wifiOnly = currentUserSettings.wifiOnlyStreaming
+                                        wifiOnly = currentUserSettings.wifiOnlyStreaming,
+                                        // The user is waiting on this loader thread, so it outranks
+                                        // any speculative pre-resolution (ARCHITECTURE.md §7).
+                                        purpose = ResolvePurpose.PLAYBACK
                                     )
                                 }.getOrThrow()
                             } catch (ce: kotlinx.coroutines.CancellationException) {
@@ -320,14 +324,17 @@ class KaonPlaybackService : MediaSessionService() {
         val count = player.mediaItemCount
         if (count == 0) return
 
-        val trackIds = mutableListOf<Long>()
+        val entries = mutableListOf<QueueEntry>()
         for (i in 0 until count) {
             val item = player.getMediaItemAt(i)
-            item.mediaId.toLongOrNull()?.let { trackIds.add(it) }
+            val trackId = item.mediaId.toLongOrNull() ?: continue
+            // Persist the provider identity alongside the id. Without it, a restore can only look the
+            // track up in Room, and streamed tracks have no row there.
+            entries += QueueEntry(trackId = trackId, youtubeVideoId = item.youtubeVideoId())
         }
 
         val snapshot = QueueSnapshot(
-            trackIds = trackIds,
+            entries = entries,
             currentIndex = player.currentMediaItemIndex,
             currentPositionMs = player.currentPosition,
             isShuffleEnabled = player.shuffleModeEnabled,
@@ -338,6 +345,13 @@ class KaonPlaybackService : MediaSessionService() {
         snapshotManager.scheduleSnapshotSave(snapshot, immediate = immediate)
     }
 
+    /** Reads the persisted provider id from the item extras, falling back to its `youtube://` URI. */
+    private fun MediaItem.youtubeVideoId(): String? {
+        mediaMetadata.extras?.getString(MediaItemExtras.YOUTUBE_VIDEO_ID)?.takeIf { it.isNotBlank() }?.let { return it }
+        val uri = localConfiguration?.uri ?: return null
+        return if (uri.scheme == "youtube") uri.schemeSpecificPart?.removePrefix("//")?.takeIf { it.isNotBlank() } else null
+    }
+
     private fun restoreQueueSnapshotIfIdle() {
         serviceScope.launch {
             // Restore rule: Only restore if player is empty and not currently playing
@@ -346,42 +360,66 @@ class KaonPlaybackService : MediaSessionService() {
             val snapshot = snapshotManager.loadSnapshot() ?: return@launch
             if (player.mediaItemCount > 0) return@launch // Double-check race condition
 
-            val tracks = trackRepository.getTracksByIds(snapshot.trackIds)
-            if (tracks.isEmpty()) {
-                // If restore finds only orphans/missing tracks: clean empty state, snapshot cleared (§4 #11)
-                Timber.tag("PlaybackService").w("Restoration snapshot contained only missing tracks. Clearing snapshot.")
+            // Local tracks are rehydrated from Room; remote ones are rebuilt from the persisted
+            // provider id, so a streamed queue survives process death instead of being dropped.
+            val localTracks = trackRepository
+                .getTracksByIds(snapshot.entries.filterNot { it.isRemote }.map { it.trackId })
+                .associateBy { it.id }
+
+            val restorable = snapshot.entries.filter { it.isRemote || localTracks.containsKey(it.trackId) }
+            if (restorable.isEmpty()) {
+                // Restore found only orphaned local tracks: clear rather than leave a snapshot that
+                // can never be restored.
+                Timber.tag("queue").w("Restoration snapshot contained no restorable entries. Clearing.")
                 snapshotManager.clearSnapshot()
                 return@launch
             }
             if (player.mediaItemCount > 0) return@launch
 
-            val mediaItems = tracks.map { track ->
+            val mediaItems = restorable.map { entry ->
+                val track = localTracks[entry.trackId]
                 val uri = when {
-                    track.source == "YOUTUBE" && !track.youtubeVideoId.isNullOrBlank() -> Uri.parse("youtube://${track.youtubeVideoId}")
-                    else -> track.contentUri
+                    entry.isRemote -> Uri.parse("youtube://${entry.youtubeVideoId}")
+                    else -> track?.contentUri
                 }
                 MediaItem.Builder()
-                    .setMediaId(track.id.toString())
+                    .setMediaId(entry.trackId.toString())
                     .setUri(uri)
                     .setMediaMetadata(
                         MediaMetadata.Builder()
-                            .setTitle(track.title)
-                            .setArtist(track.artist)
-                            .setAlbumTitle(track.album)
-                            .setArtworkUri(track.contentUri.takeIf { track.source == "YOUTUBE" })
+                            .setTitle(track?.title)
+                            .setArtist(track?.artist)
+                            .setAlbumTitle(track?.album)
+                            .setArtworkUri(track?.contentUri.takeIf { track?.source == "YOUTUBE" })
+                            .setExtras(
+                                Bundle().apply {
+                                    putString(
+                                        MediaItemExtras.SOURCE,
+                                        if (entry.isRemote) MediaItemExtras.SOURCE_YOUTUBE else MediaItemExtras.SOURCE_LOCAL
+                                    )
+                                    putString(MediaItemExtras.YOUTUBE_VIDEO_ID, entry.youtubeVideoId)
+                                }
+                            )
                             .build()
                     )
                     .build()
             }
 
-            val targetIndex = snapshot.currentIndex.coerceIn(0, mediaItems.size - 1)
+            // Index is derived from the restorable list, not the original snapshot: dropping an
+            // orphaned entry shifts every position after it, so the pre-filter index would resume on
+            // the wrong track.
+            val previousEntry = snapshot.entries.getOrNull(snapshot.currentIndex)
+            val targetIndex = restorable.indexOf(previousEntry)
+                .takeIf { it >= 0 }
+                ?.coerceIn(0, mediaItems.size - 1)
+                ?: 0
             player.setMediaItems(mediaItems, targetIndex, snapshot.currentPositionMs)
             player.repeatMode = snapshot.repeatMode
             player.shuffleModeEnabled = snapshot.isShuffleEnabled
             player.prepare()
             player.playWhenReady = false // Restored queue starts paused (M2-D2)
 
-            Timber.tag("PlaybackService").i("Restored ${mediaItems.size} tracks from queue snapshot at index $targetIndex (paused)")
+            Timber.tag("queue").i("Restored ${mediaItems.size} entries from queue snapshot at index $targetIndex (paused)")
         }
     }
 

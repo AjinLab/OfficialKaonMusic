@@ -2,6 +2,7 @@ package com.kaon.music.core.playback
 
 import com.kaon.music.core.data.db.dao.QueueSnapshotDao
 import com.kaon.music.core.data.db.entity.QueueSnapshotEntity
+import com.kaon.music.core.data.model.QueueEntry
 import com.kaon.music.core.data.model.QueueSnapshot
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -48,12 +49,12 @@ class QueueSnapshotManager(
 
     suspend fun loadSnapshot(): QueueSnapshot? {
         val entity = queueSnapshotDao.getQueueSnapshot() ?: return null
-        val trackIds = parseTrackIds(entity.serializedTrackIds)
-        if (trackIds.isEmpty()) return null
+        val entries = parseEntries(entity.serializedTrackIds)
+        if (entries.isEmpty()) return null
 
         return QueueSnapshot(
-            trackIds = trackIds,
-            currentIndex = entity.currentIndex.coerceIn(0, trackIds.size - 1),
+            entries = entries,
+            currentIndex = entity.currentIndex.coerceIn(0, entries.size - 1),
             currentPositionMs = entity.currentPositionMs,
             isShuffleEnabled = entity.isShuffleEnabled,
             repeatMode = entity.repeatMode,
@@ -68,7 +69,7 @@ class QueueSnapshotManager(
     }
 
     suspend fun saveSnapshotDirectly(snapshot: QueueSnapshot) {
-        val serialized = snapshot.trackIds.joinToString(",")
+        val serialized = serializeEntries(snapshot.entries)
         val entity = QueueSnapshotEntity(
             id = 1,
             serializedTrackIds = serialized,
@@ -79,7 +80,7 @@ class QueueSnapshotManager(
             savedAt = snapshot.timestamp
         )
         queueSnapshotDao.saveQueueSnapshot(entity)
-        Timber.tag("QueueSnapshot").d("Queue snapshot persisted (${snapshot.trackIds.size} tracks)")
+        Timber.tag("queue").d("Queue snapshot persisted (${snapshot.entries.size} entries)")
     }
 
     private fun persistSnapshotNow(snapshot: QueueSnapshot) {
@@ -87,13 +88,44 @@ class QueueSnapshotManager(
             try {
                 saveSnapshotDirectly(snapshot)
             } catch (e: Exception) {
-                Timber.tag("QueueSnapshot").e(e, "Failed to persist queue snapshot")
+                Timber.tag("queue").e(e, "Failed to persist queue snapshot")
             }
         }
     }
 
-    private fun parseTrackIds(serialized: String): List<Long> {
+    /**
+     * Serializes entries as `trackId[:videoId]`, comma-separated.
+     *
+     * A bare `trackId` is still valid, so snapshots written by an older build load unchanged (their
+     * entries simply carry no provider identity and restore as local-only, exactly as before).
+     */
+    private fun serializeEntries(entries: List<QueueEntry>): String =
+        entries.joinToString(",") { entry ->
+            if (entry.youtubeVideoId.isNullOrBlank()) {
+                entry.trackId.toString()
+            } else {
+                "${entry.trackId}$VIDEO_ID_SEPARATOR${entry.youtubeVideoId}"
+            }
+        }
+
+    private fun parseEntries(serialized: String): List<QueueEntry> {
         if (serialized.isBlank()) return emptyList()
-        return serialized.split(",").mapNotNull { it.trim().toLongOrNull() }
+        return serialized.split(",").mapNotNull { raw ->
+            val token = raw.trim()
+            if (token.isEmpty()) return@mapNotNull null
+            val separator = token.indexOf(VIDEO_ID_SEPARATOR)
+            if (separator < 0) {
+                token.toLongOrNull()?.let { QueueEntry(trackId = it) }
+            } else {
+                val trackId = token.substring(0, separator).toLongOrNull() ?: return@mapNotNull null
+                val videoId = token.substring(separator + 1).takeIf { it.isNotBlank() }
+                QueueEntry(trackId = trackId, youtubeVideoId = videoId)
+            }
+        }
+    }
+
+    private companion object {
+        // ':' cannot appear in a YouTube video id (they are [A-Za-z0-9_-]) or in a Long.
+        const val VIDEO_ID_SEPARATOR = ':'
     }
 }

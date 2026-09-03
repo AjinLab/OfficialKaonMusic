@@ -2,6 +2,7 @@ package com.kaon.music.core.playback
 
 import com.kaon.music.core.data.db.dao.QueueSnapshotDao
 import com.kaon.music.core.data.db.entity.QueueSnapshotEntity
+import com.kaon.music.core.data.model.QueueEntry
 import com.kaon.music.core.data.model.QueueSnapshot
 import com.kaon.music.core.data.model.Track
 import com.kaon.music.core.playback.model.RepeatMode
@@ -76,7 +77,7 @@ class PlaybackQueueTest {
         val snapshotManager = QueueSnapshotManager(fakeQueueDao, testScope)
 
         val originalSnapshot = QueueSnapshot(
-            trackIds = listOf(101L, 202L, 303L, 404L),
+            entries = listOf(101L, 202L, 303L, 404L).map { QueueEntry(trackId = it) },
             currentIndex = 1,
             currentPositionMs = 73400L,
             isShuffleEnabled = true,
@@ -192,7 +193,7 @@ class PlaybackQueueTest {
 
         snapshotManager.saveSnapshotDirectly(
             QueueSnapshot(
-                trackIds = listOf(999L, 888L), // Non-existent in library
+                entries = listOf(999L, 888L).map { QueueEntry(trackId = it) }, // Non-existent in library
                 currentIndex = 0,
                 currentPositionMs = 0L,
                 isShuffleEnabled = false,

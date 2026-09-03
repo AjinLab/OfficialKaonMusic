@@ -491,13 +491,13 @@ class PlaybackFacade(
                     .setAlbumTitle(album)
                     .setArtworkUri(contentUri.takeIf { source == "YOUTUBE" })
                     .setExtras(Bundle().apply {
-                        putLong(EXTRA_MEDIA_STORE_ID, mediaStoreId)
-                        putString(EXTRA_SOURCE, source)
-                        putString(EXTRA_YOUTUBE_VIDEO_ID, youtubeVideoId)
-                        putString(EXTRA_MIME_TYPE, mimeType)
-                        putLong(EXTRA_ALBUM_ID, albumId)
-                        putLong(EXTRA_DURATION_MS, durationMs)
-                        putLong(EXTRA_SIZE_BYTES, sizeBytes)
+                        putLong(MediaItemExtras.MEDIA_STORE_ID, mediaStoreId)
+                        putString(MediaItemExtras.SOURCE, source)
+                        putString(MediaItemExtras.YOUTUBE_VIDEO_ID, youtubeVideoId)
+                        putString(MediaItemExtras.MIME_TYPE, mimeType)
+                        putLong(MediaItemExtras.ALBUM_ID, albumId)
+                        putLong(MediaItemExtras.DURATION_MS, durationMs)
+                        putLong(MediaItemExtras.SIZE_BYTES, sizeBytes)
                     })
                     .build()
             )
@@ -516,35 +516,26 @@ class PlaybackFacade(
         val metadata = mediaItem.mediaMetadata
         val extras = metadata.extras
         val uri = mediaItem.localConfiguration?.uri
-        val source = extras?.getString(EXTRA_SOURCE)
-            ?: if (uri?.scheme == "youtube") "YOUTUBE" else "LOCAL"
-        val youtubeVideoId = extras?.getString(EXTRA_YOUTUBE_VIDEO_ID)
+        val source = extras?.getString(MediaItemExtras.SOURCE)
+            ?: if (uri?.scheme == "youtube") MediaItemExtras.SOURCE_YOUTUBE else MediaItemExtras.SOURCE_LOCAL
+        val youtubeVideoId = extras?.getString(MediaItemExtras.YOUTUBE_VIDEO_ID)
             ?: uri?.takeIf { it.scheme == "youtube" }?.schemeSpecificPart
 
         return Track(
             id = id,
-            mediaStoreId = extras?.getLong(EXTRA_MEDIA_STORE_ID, 0L) ?: 0L,
+            mediaStoreId = extras?.getLong(MediaItemExtras.MEDIA_STORE_ID, 0L) ?: 0L,
             title = metadata.title?.toString().orEmpty(),
             artist = metadata.artist?.toString().orEmpty(),
             album = metadata.albumTitle?.toString().orEmpty(),
-            albumId = extras?.getLong(EXTRA_ALBUM_ID, 0L) ?: 0L,
-            durationMs = extras?.getLong(EXTRA_DURATION_MS, 0L) ?: 0L,
-            sizeBytes = extras?.getLong(EXTRA_SIZE_BYTES, 0L) ?: 0L,
+            albumId = extras?.getLong(MediaItemExtras.ALBUM_ID, 0L) ?: 0L,
+            durationMs = extras?.getLong(MediaItemExtras.DURATION_MS, 0L) ?: 0L,
+            sizeBytes = extras?.getLong(MediaItemExtras.SIZE_BYTES, 0L) ?: 0L,
             dateModified = 0L,
             contentUri = metadata.artworkUri.takeIf { source == "YOUTUBE" } ?: uri,
             source = source,
             youtubeVideoId = youtubeVideoId,
-            mimeType = extras?.getString(EXTRA_MIME_TYPE)
+            mimeType = extras?.getString(MediaItemExtras.MIME_TYPE)
         )
     }
 
-    private companion object {
-        const val EXTRA_MEDIA_STORE_ID = "kaon.media_store_id"
-        const val EXTRA_SOURCE = "kaon.source"
-        const val EXTRA_YOUTUBE_VIDEO_ID = "kaon.youtube_video_id"
-        const val EXTRA_MIME_TYPE = "kaon.mime_type"
-        const val EXTRA_ALBUM_ID = "kaon.album_id"
-        const val EXTRA_DURATION_MS = "kaon.duration_ms"
-        const val EXTRA_SIZE_BYTES = "kaon.size_bytes"
-    }
 }
