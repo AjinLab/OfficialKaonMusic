@@ -14,7 +14,6 @@ import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
-import com.kaon.music.core.online.cipher.CipherDeobfuscator
 import com.kaon.music.core.playback.YouTubeStreamResolver
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -44,9 +43,8 @@ class YouTubeLiveStreamingTest {
     @Before
     fun setup() {
         InstrumentationRegistry.getInstrumentation().runOnMainSync {
-            if (!CipherDeobfuscator.isInitialized) {
-                CipherDeobfuscator.initialize(context)
-            }
+            YouTubeStreamExtractor.initialize(context)
+            YouTubeStreamResolver.attachContext(context)
         }
     }
 
@@ -83,15 +81,15 @@ class YouTubeLiveStreamingTest {
                                 else -> ""
                             }.trim()
 
-                            println("[TEST_STREAM] Resolving URI: $uri, videoId: $videoId")
+                            android.util.Log.d("TEST_STREAM", "Resolving videoId=$videoId")
                             if (videoId.isNotBlank()) {
                                 val resolved = runBlocking {
                                     val res = YouTubeStreamResolver.resolveStreamData(videoId)
-                                    println("[TEST_STREAM] resolveStreamData result: isSuccess=${res.isSuccess}, error=${res.exceptionOrNull()?.message}")
+                                    android.util.Log.d("TEST_STREAM", "resolveStreamData isSuccess=${res.isSuccess} error=${res.exceptionOrNull()?.message}")
                                     res.getOrNull()
                                 }
                                 if (resolved != null && resolved.url.isNotBlank()) {
-                                    println("[TEST_STREAM] Resolved URL: ${resolved.url.take(80)}... client=${resolved.clientName}, headers=${resolved.headers.keys}")
+                                    android.util.Log.d("TEST_STREAM", "Resolved client=${resolved.clientName} headers=${resolved.headers.keys}")
                                     val chunkLength = 512 * 1024L
                                     return dataSpec.buildUpon()
                                         .setUri(Uri.parse(resolved.url))
@@ -115,11 +113,11 @@ class YouTubeLiveStreamingTest {
 
             p.addListener(object : Player.Listener {
                 override fun onPlaybackStateChanged(playbackState: Int) {
-                    println("[TEST_STREAM] onPlaybackStateChanged: state=$playbackState (READY=${Player.STATE_READY}, BUFFERING=${Player.STATE_BUFFERING})")
+                    android.util.Log.d("TEST_STREAM", "onPlaybackStateChanged: state=$playbackState")
                 }
 
                 override fun onIsPlayingChanged(isPlaying: Boolean) {
-                    println("[TEST_STREAM] onIsPlayingChanged: isPlaying=$isPlaying")
+                    android.util.Log.d("TEST_STREAM", "onIsPlayingChanged isPlaying=$isPlaying")
                     if (isPlaying) {
                         playbackStarted.set(true)
                         isPlayingLatch.countDown()
@@ -127,7 +125,7 @@ class YouTubeLiveStreamingTest {
                 }
 
                 override fun onPlayerError(error: PlaybackException) {
-                    println("[TEST_STREAM] onPlayerError: ${error.errorCodeName} - ${error.message}")
+                    android.util.Log.e("TEST_STREAM", "onPlayerError ${error.errorCodeName}: ${error.message}")
                     playbackError.set(error)
                 }
             })

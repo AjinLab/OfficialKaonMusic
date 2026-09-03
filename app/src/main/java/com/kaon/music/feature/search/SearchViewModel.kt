@@ -1,5 +1,6 @@
 package com.kaon.music.feature.search
 
+import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.kaon.music.core.data.model.Album
@@ -21,13 +22,14 @@ import com.kaon.music.core.designsystem.theme.GenreRnBBrush
 import com.kaon.music.core.designsystem.theme.GenreRockBrush
 import com.kaon.music.core.network.NetworkMonitor
 import com.kaon.music.core.playback.PlaybackFacade
-import com.kaon.music.core.playback.model.PlaybackState
 import com.kaon.music.feature.search.component.GenreItem
 import com.metrolist.innertube.YouTube
 import com.metrolist.innertube.models.AlbumItem
 import com.metrolist.innertube.models.ArtistItem
 import com.metrolist.innertube.models.PlaylistItem
 import com.metrolist.innertube.models.SongItem
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -38,6 +40,8 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import timber.log.Timber
@@ -75,13 +79,16 @@ class SearchViewModel(
     private val trackRepository: TrackRepository,
     private val playbackFacade: PlaybackFacade,
     private val networkConnectivityMonitor: NetworkMonitor? = null,
-    private val playlistRepository: PlaylistRepository? = null
+    private val playlistRepository: PlaylistRepository? = null,
+    private val savedStateHandle: SavedStateHandle = SavedStateHandle(),
+    private val computeDispatcher: CoroutineDispatcher = Dispatchers.Default
 ) : ViewModel() {
 
     val playlists: StateFlow<List<Playlist>> = (playlistRepository?.observeAllPlaylists() ?: flowOf(emptyList()))
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-    private val _searchQuery = MutableStateFlow("")
+    // Restored so rotating mid-search does not discard the query and re-issue the network search.
+    private val _searchQuery = MutableStateFlow(savedStateHandle.get<String>(KEY_QUERY) ?: "")
     val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
 
     private val _selectedFilter = MutableStateFlow(SearchFilterType.ALL)
@@ -167,7 +174,7 @@ class SearchViewModel(
         }
     }
 
-    val uiState: StateFlow<SearchUiState> = combine(
+    private val searchContent = combine(
         _searchQuery,
         _selectedFilter,
         _suggestions,
@@ -180,7 +187,6 @@ class SearchViewModel(
         _onlineArtists,
         _onlinePlaylists,
         _isSearchingOnline,
-        playbackFacade.playbackState,
         isOnlineFlow
     ) { args ->
         val query = args[0] as String
@@ -203,8 +209,7 @@ class SearchViewModel(
         @Suppress("UNCHECKED_CAST")
         val onlinePlaylists = args[10] as List<OnlinePlaylist>
         val isSearchingOnline = args[11] as Boolean
-        val playback = args[12] as PlaybackState
-        val isOnline = args[13] as Boolean
+        val isOnline = args[12] as Boolean
 
         val q = query.trim().lowercase()
         val (tracks, albums, artists) = if (q.isBlank()) {
@@ -247,10 +252,22 @@ class SearchViewModel(
             onlinePlaylists = if (isOnline) onlinePlaylists else emptyList(),
             isSearchingOnline = isSearchingOnline && isOnline,
             isOnline = isOnline,
-            genres = defaultGenres,
-            activeTrackId = playback.currentTrack?.id,
-            isPlaying = playback.isPlaying
+            genres = defaultGenres
         )
+    }.flowOn(computeDispatcher)
+
+    /**
+     * ARCHITECTURE.md §3.2: playback contributes only the active track id and play/pause flag, from
+     * [PlaybackFacade.nowPlaying]. The 500 ms progress tick used to be a source in the combine above,
+     * which re-filtered the entire library twice per second on the main dispatcher.
+     */
+    val uiState: StateFlow<SearchUiState> = combine(
+        searchContent,
+        playbackFacade.nowPlaying
+            .map { it.currentTrack?.id to it.isPlaying }
+            .distinctUntilChanged()
+    ) { content, (activeTrackId, isPlaying) ->
+        content.copy(activeTrackId = activeTrackId, isPlaying = isPlaying)
     }.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5000),
@@ -259,6 +276,7 @@ class SearchViewModel(
 
     fun onSearchQueryChanged(query: String) {
         _searchQuery.value = query
+        savedStateHandle[KEY_QUERY] = query
         if (query.isBlank()) {
             _suggestions.value = emptyList()
             _topResult.value = null
@@ -458,5 +476,9 @@ class SearchViewModel(
             val plId = repo.createPlaylist(name)
             repo.addTrackToPlaylist(plId, track.id)
         }
+    }
+
+    private companion object {
+        const val KEY_QUERY = "search.query"
     }
 }

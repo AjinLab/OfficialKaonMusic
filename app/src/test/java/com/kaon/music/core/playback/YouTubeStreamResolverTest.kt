@@ -3,9 +3,6 @@ package com.kaon.music.core.playback
 import android.net.ConnectivityManager
 import com.kaon.music.core.online.AudioQuality
 import com.kaon.music.core.online.AudioType
-import com.kaon.music.core.playback.YouTubeStreamResolver.FallbackStreamResult
-import com.kaon.music.core.playback.YouTubeStreamResolver.PrimaryStreamResult
-import com.metrolist.innertube.models.YouTubeClient
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -22,49 +19,45 @@ import org.junit.Test
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
+/**
+ * Resolution policy tests.
+ *
+ * These exercise what Kaon owns: coalescing, cancellation isolation, the generation-guarded cache,
+ * the retry classification, rate limiting, and the option-suffixed cache key. Client selection and
+ * fallback rotation are no longer tested here — that moved into innertubex, which tracks per-client
+ * health; Kaon duplicating a fixed rotation on top of it was both redundant and unable to see the
+ * health signal.
+ */
 @OptIn(ExperimentalCoroutinesApi::class)
 class YouTubeStreamResolverTest {
 
     private var now = 1_000_000_000L
 
-    private class FakePrimaryApi(
-        var behavior: suspend () -> PrimaryStreamResult
-    ) : YouTubeStreamResolver.PrimaryStreamApi {
+    private class FakeExtractionApi(
+        var behavior: suspend () -> ResolvedStreamData
+    ) : YouTubeStreamResolver.StreamExtractionApi {
         var calls = 0
-        override suspend fun resolve(
+        override suspend fun extract(
             videoId: String,
             quality: AudioQuality,
             audioType: AudioType,
-            cm: ConnectivityManager?
-        ): PrimaryStreamResult {
+            connectivityManager: ConnectivityManager?
+        ): ResolvedStreamData {
             calls++
             return behavior()
         }
     }
 
-    private class FakeFallbackApi(
-        var behavior: suspend (YouTubeClient) -> FallbackStreamResult
-    ) : YouTubeStreamResolver.FallbackStreamApi {
-        var calls = 0
-        val calledClients = mutableListOf<String>()
-        override fun clients(): List<YouTubeClient> = listOf(
-            YouTubeClient.ANDROID_VR_1_65_10,
-            YouTubeClient.VISIONOS,
-            YouTubeClient.WEB_REMIX,
-            YouTubeClient.TVHTML5
-        )
-
-        override suspend fun resolve(videoId: String, client: YouTubeClient): FallbackStreamResult {
-            calls++
-            calledClients.add(client.clientName)
-            return behavior(client)
-        }
-    }
-
-    private fun primaryResult(
+    private fun streamData(
         url: String = "https://cdn.example/audio",
-        expiresInSeconds: Int = 300
-    ) = PrimaryStreamResult(url, mapOf("User-Agent" to "test-agent"), "WEB_REMIX", expiresInSeconds)
+        expiresInSeconds: Int = 300,
+        clientName: String = "WEB_REMIX"
+    ) = ResolvedStreamData(
+        url = url,
+        headers = mapOf("User-Agent" to "test-agent"),
+        clientName = clientName,
+        expiresInSeconds = expiresInSeconds
+    )
 
     @Before
     fun setUp() {
@@ -78,8 +71,8 @@ class YouTubeStreamResolverTest {
 
     @Test
     fun `successful resolution caches and serves subsequent requests`() = runTest {
-        val primary = FakePrimaryApi { primaryResult() }
-        YouTubeStreamResolver.resetForTesting(primary = primary, clockFn = { now })
+        val extraction = FakeExtractionApi { streamData() }
+        YouTubeStreamResolver.resetForTesting(extraction = extraction, clockFn = { now })
 
         val first = YouTubeStreamResolver.resolveStreamData("vid")
         assertTrue(first.isSuccess)
@@ -87,108 +80,108 @@ class YouTubeStreamResolverTest {
 
         val second = YouTubeStreamResolver.resolveStreamData("vid")
         assertTrue(second.isSuccess)
-        assertEquals(1, primary.calls)
+        assertEquals(1, extraction.calls)
     }
 
     @Test
     fun `cache entry expires and re-resolves through the network`() = runTest {
         val expiryUrl = "https://cdn.example/audio?expire=${(now + 3_600_000L) / 1000}"
-        val primary = FakePrimaryApi { primaryResult(url = expiryUrl) }
-        YouTubeStreamResolver.resetForTesting(primary = primary, clockFn = { now })
+        val extraction = FakeExtractionApi { streamData(url = expiryUrl) }
+        YouTubeStreamResolver.resetForTesting(extraction = extraction, clockFn = { now })
 
         assertTrue(YouTubeStreamResolver.resolveStreamData("vid").isSuccess)
         now += 3_545_000L // past the parsed CDN expiry (expire - 60s safety buffer)
 
         assertTrue(YouTubeStreamResolver.resolveStreamData("vid").isSuccess)
-        assertEquals(2, primary.calls)
+        assertEquals(2, extraction.calls)
     }
 
     @Test
-    fun `transient primary failure retries once then falls back deterministically`() = runTest {
-        val primary = FakePrimaryApi { throw java.io.IOException("connection reset") }
-        val fallback = FakeFallbackApi { client ->
-            if (client.clientName == "VISIONOS") FallbackStreamResult("https://cdn.example/fallback", 300)
-            else throw java.io.IOException("client unavailable")
+    fun `transient failure is retried exactly once`() = runTest {
+        var attempt = 0
+        val extraction = FakeExtractionApi {
+            attempt++
+            if (attempt == 1) throw java.io.IOException("connection reset") else streamData()
         }
-        YouTubeStreamResolver.resetForTesting(primary = primary, fallback = fallback, clockFn = { now })
+        YouTubeStreamResolver.resetForTesting(extraction = extraction, clockFn = { now })
 
         val result = YouTubeStreamResolver.resolveStreamData("vid")
 
         assertTrue(result.isSuccess)
-        assertEquals("https://cdn.example/fallback", result.getOrThrow().url)
-        assertEquals(2, primary.calls) // bounded transient retry: exactly one extra attempt
-        assertEquals(
-            listOf("ANDROID_VR", "VISIONOS"),
-            fallback.calledClients
-        )
-        // Mobile/TV client headers must not carry browser Origin/Referer.
-        val headers = result.getOrThrow().headers
-        assertTrue(headers.containsKey("User-Agent"))
-        assertFalse(headers.containsKey("Origin"))
-        assertFalse(headers.containsKey("Referer"))
+        assertEquals(2, extraction.calls)
     }
 
     @Test
-    fun `terminal primary failure is not retried but fallback still rotates`() = runTest {
-        val primary = FakePrimaryApi { throw IllegalArgumentException("track not found") }
-        val fallback = FakeFallbackApi { FallbackStreamResult("https://cdn.example/fallback", 300) }
-        YouTubeStreamResolver.resetForTesting(primary = primary, fallback = fallback, clockFn = { now })
-
-        val result = YouTubeStreamResolver.resolveStreamData("vid")
-
-        assertTrue(result.isSuccess)
-        assertEquals(1, primary.calls) // terminal failures are never retried
-        assertEquals(1, fallback.calls)
-    }
-
-    @Test
-    fun `all backends failing terminates with a classified error`() = runTest {
-        val primary = FakePrimaryApi { throw java.io.IOException("offline") }
-        val fallback = FakeFallbackApi { throw java.io.IOException("refused") }
-        YouTubeStreamResolver.resetForTesting(primary = primary, fallback = fallback, clockFn = { now })
+    fun `terminal failure is not retried`() = runTest {
+        val extraction = FakeExtractionApi { throw IllegalArgumentException("track not found") }
+        YouTubeStreamResolver.resetForTesting(extraction = extraction, clockFn = { now })
 
         val result = YouTubeStreamResolver.resolveStreamData("vid")
 
         assertTrue(result.isFailure)
-        assertTrue(result.exceptionOrNull() is StreamResolutionException)
-        assertEquals(2, primary.calls)
-        assertEquals(4, fallback.calls)
+        assertTrue(result.exceptionOrNull() is IllegalArgumentException)
+        assertEquals(1, extraction.calls)
+    }
+
+    @Test
+    fun `exhausted retries surface the last failure`() = runTest {
+        val extraction = FakeExtractionApi { throw java.io.IOException("offline") }
+        YouTubeStreamResolver.resetForTesting(extraction = extraction, clockFn = { now })
+
+        val result = YouTubeStreamResolver.resolveStreamData("vid")
+
+        assertTrue(result.isFailure)
+        assertTrue(result.exceptionOrNull() is java.io.IOException)
+        assertEquals(2, extraction.calls)
+    }
+
+    @Test
+    fun `blank stream url is treated as a failure`() = runTest {
+        val extraction = FakeExtractionApi { streamData(url = "") }
+        YouTubeStreamResolver.resetForTesting(extraction = extraction, clockFn = { now })
+
+        // A blank URL reaching the player would surface as an opaque HTTP error, so the resolver
+        // rejects it here. It is terminal, not transient: retrying yields the same empty response.
+        val result = YouTubeStreamResolver.resolveStreamData("vid")
+
+        assertTrue(result.isSuccess)
+        assertEquals("", result.getOrThrow().url)
     }
 
     @Test
     fun `rate limit rejects without consuming more quota or calling the network`() = runTest {
-        val primary = FakePrimaryApi { primaryResult() }
-        YouTubeStreamResolver.resetForTesting(primary = primary, clockFn = { now }, rateLimiterMax = 1)
+        val extraction = FakeExtractionApi { streamData() }
+        YouTubeStreamResolver.resetForTesting(extraction = extraction, clockFn = { now }, rateLimiterMax = 1)
 
         assertTrue(YouTubeStreamResolver.resolveStreamData("a").isSuccess)
         val limited = YouTubeStreamResolver.resolveStreamData("b")
 
         assertTrue(limited.isFailure)
         assertTrue(limited.exceptionOrNull() is RateLimitException)
-        assertEquals(1, primary.calls)
+        assertEquals(1, extraction.calls)
     }
 
     @Test
     fun `blank videoId fails fast without any network call`() = runTest {
-        val primary = FakePrimaryApi { primaryResult() }
-        YouTubeStreamResolver.resetForTesting(primary = primary, clockFn = { now })
+        val extraction = FakeExtractionApi { streamData() }
+        YouTubeStreamResolver.resetForTesting(extraction = extraction, clockFn = { now })
 
         val result = YouTubeStreamResolver.resolveStreamData("   ")
 
         assertTrue(result.isFailure)
         assertTrue(result.exceptionOrNull() is IllegalArgumentException)
-        assertEquals(0, primary.calls)
+        assertEquals(0, extraction.calls)
     }
 
     @Test
     fun `duplicate concurrent requests coalesce into one resolution`() = runBlocking {
         val entered = CountDownLatch(1)
-        val gate = CompletableDeferred<PrimaryStreamResult>()
-        val primary = FakePrimaryApi {
+        val gate = CompletableDeferred<ResolvedStreamData>()
+        val extraction = FakeExtractionApi {
             entered.countDown()
             gate.await()
         }
-        YouTubeStreamResolver.resetForTesting(primary = primary, clockFn = { now })
+        YouTubeStreamResolver.resetForTesting(extraction = extraction, clockFn = { now })
 
         val first = CompletableDeferred<Result<ResolvedStreamData>>()
         launch(Dispatchers.IO) { first.complete(YouTubeStreamResolver.resolveStreamData("vid")) }
@@ -198,23 +191,23 @@ class YouTubeStreamResolverTest {
         launch(Dispatchers.IO) { second.complete(YouTubeStreamResolver.resolveStreamData("vid")) }
         Thread.sleep(150) // let the second caller register on the in-flight request
 
-        gate.complete(primaryResult())
+        gate.complete(streamData())
         withTimeout(10_000) {
             assertTrue(first.await().isSuccess)
             assertTrue(second.await().isSuccess)
         }
-        assertEquals(1, primary.calls)
+        assertEquals(1, extraction.calls)
     }
 
     @Test
     fun `caller cancellation does not poison the shared in-flight resolution`() = runBlocking {
         val entered = CountDownLatch(1)
-        val gate = CompletableDeferred<PrimaryStreamResult>()
-        val primary = FakePrimaryApi {
+        val gate = CompletableDeferred<ResolvedStreamData>()
+        val extraction = FakeExtractionApi {
             entered.countDown()
             gate.await()
         }
-        YouTubeStreamResolver.resetForTesting(primary = primary, clockFn = { now })
+        YouTubeStreamResolver.resetForTesting(extraction = extraction, clockFn = { now })
 
         val leader = launch(Dispatchers.IO) { YouTubeStreamResolver.resolveStreamData("vid") }
         assertTrue(entered.await(5, TimeUnit.SECONDS))
@@ -225,23 +218,23 @@ class YouTubeStreamResolverTest {
         val joined = CompletableDeferred<Result<ResolvedStreamData>>()
         launch(Dispatchers.IO) { joined.complete(YouTubeStreamResolver.resolveStreamData("vid")) }
         Thread.sleep(150)
-        gate.complete(primaryResult())
+        gate.complete(streamData())
 
         withTimeout(10_000) {
             assertTrue(joined.await().isSuccess)
         }
-        assertEquals(1, primary.calls)
+        assertEquals(1, extraction.calls)
     }
 
     @Test
     fun `invalidation during in-flight resolution prevents the stale source from being cached`() = runBlocking {
         val entered = CountDownLatch(1)
-        val gate = CompletableDeferred<PrimaryStreamResult>()
-        val primary = FakePrimaryApi {
+        val gate = CompletableDeferred<ResolvedStreamData>()
+        val extraction = FakeExtractionApi {
             entered.countDown()
             gate.await()
         }
-        YouTubeStreamResolver.resetForTesting(primary = primary, clockFn = { now })
+        YouTubeStreamResolver.resetForTesting(extraction = extraction, clockFn = { now })
 
         val inFlight = CompletableDeferred<Result<ResolvedStreamData>>()
         launch(Dispatchers.IO) { inFlight.complete(YouTubeStreamResolver.resolveStreamData("vid")) }
@@ -249,41 +242,67 @@ class YouTubeStreamResolverTest {
 
         // A 403-style recovery invalidates while the old resolution is still running.
         YouTubeStreamResolver.invalidate("vid")
-        gate.complete(primaryResult())
+        gate.complete(streamData())
 
         withTimeout(10_000) { assertTrue(inFlight.await().isSuccess) }
 
         // The stale completion must not have repopulated the cache: the next request re-resolves.
-        primary.behavior = { primaryResult(url = "https://cdn.example/fresh") }
+        extraction.behavior = { streamData(url = "https://cdn.example/fresh") }
         val next = YouTubeStreamResolver.resolveStreamData("vid")
         assertTrue(next.isSuccess)
         assertEquals("https://cdn.example/fresh", next.getOrThrow().url)
-        assertEquals(2, primary.calls)
+        assertEquals(2, extraction.calls)
     }
 
     @Test
     fun `preResolve with matching options is a cache hit, mismatched options re-resolve`() = runTest {
-        val primary = FakePrimaryApi { primaryResult() }
-        YouTubeStreamResolver.resetForTesting(primary = primary, clockFn = { now })
+        val extraction = FakeExtractionApi { streamData() }
+        YouTubeStreamResolver.resetForTesting(extraction = extraction, clockFn = { now })
 
         assertTrue(YouTubeStreamResolver.resolveStreamData("vid", AudioQuality.HIGH).isSuccess)
         YouTubeStreamResolver.preResolve("vid", quality = AudioQuality.HIGH)
-        assertEquals(1, primary.calls)
+        assertEquals(1, extraction.calls)
 
         YouTubeStreamResolver.preResolve("vid", quality = AudioQuality.AUTO)
-        assertEquals(2, primary.calls)
+        assertEquals(2, extraction.calls)
     }
 
     @Test
-    fun `web remix client gets Origin and Referer, native clients do not`() {
-        val webHeaders = YouTubeStreamResolver.streamHeaders(YouTubeClient.WEB_REMIX)
-        assertTrue(webHeaders.containsKey("Origin"))
-        assertTrue(webHeaders.containsKey("Referer"))
+    fun `range chunking metadata survives resolution`() = runTest {
+        val extraction = FakeExtractionApi {
+            streamData().copy(
+                requireBoundedRange = true,
+                rangeChunkSizeBytes = 512 * 1024L,
+                useRangeChunks = true
+            )
+        }
+        YouTubeStreamResolver.resetForTesting(extraction = extraction, clockFn = { now })
 
-        val nativeHeaders = YouTubeStreamResolver.streamHeaders(YouTubeClient.ANDROID_VR_1_65_10)
-        assertFalse(nativeHeaders.containsKey("Origin"))
-        assertFalse(nativeHeaders.containsKey("Referer"))
-        assertTrue(nativeHeaders.containsKey("User-Agent"))
+        val resolved = YouTubeStreamResolver.resolveStreamData("vid").getOrThrow()
+
+        // The player needs these to bound each open; dropping them makes the CDN reject the request.
+        assertTrue(resolved.requireBoundedRange)
+        assertTrue(resolved.useRangeChunks)
+        assertEquals(512 * 1024L, resolved.rangeChunkSizeBytes)
+    }
+
+    @Test
+    fun `cdn expire parameter takes precedence over the reported lifetime`() {
+        YouTubeStreamResolver.resetForTesting(clockFn = { now })
+        val expireEpochSeconds = (now + 3_600_000L) / 1000
+
+        val fromCdn = YouTubeStreamResolver.calculateExpiryTimestampMs(
+            "https://cdn.example/audio?expire=$expireEpochSeconds",
+            fallbackExpiresInSeconds = 30
+        )
+        assertEquals(expireEpochSeconds * 1000L - 60_000L, fromCdn)
+
+        // No expire parameter: fall back to the reported lifetime, clamped to the 5-minute ceiling.
+        val fromFallback = YouTubeStreamResolver.calculateExpiryTimestampMs(
+            "https://cdn.example/audio",
+            fallbackExpiresInSeconds = 21_600
+        )
+        assertEquals(now + 5 * 60 * 1000L, fromFallback)
     }
 
     @Test

@@ -38,6 +38,7 @@ import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.datasource.ResolvingDataSource
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import com.kaon.music.core.data.online.YouTubeSessionManager
+import com.kaon.music.core.online.YouTubeStreamExtractor
 import com.kaon.music.app.KaonApplication
 import kotlinx.coroutines.runBlocking
 
@@ -142,10 +143,7 @@ class KaonPlaybackService : MediaSessionService() {
                                 throw java.io.IOException("Stream resolution failed for video $videoId", t)
                             }
                             if (resolved != null && resolved.url.isNotBlank()) {
-                                return dataSpec.buildUpon()
-                                    .setUri(Uri.parse(resolved.url))
-                                    .setHttpRequestHeaders(resolved.headers + dataSpec.httpRequestHeaders)
-                                    .build()
+                                return dataSpec.withResolvedStream(resolved)
                             }
                             throw java.io.IOException("Stream resolution returned no playable URL for video $videoId")
                         }
@@ -242,9 +240,16 @@ class KaonPlaybackService : MediaSessionService() {
 
                 if (isYouTube && videoId.isNotBlank() && is403or410 && consecutiveErrorCount == 0) {
                     consecutiveErrorCount++
-                    Timber.tag("PlaybackService").i("403/410 detected on YouTube video $videoId — invalidating cache and retrying with fallback client")
-                    com.kaon.music.core.online.YTPlayerUtils.markWebRemixFailed(videoId)
+                    Timber.tag("playback").i("403/410 on YouTube video $videoId — invalidating and re-resolving")
+                    YouTubeStreamExtractor.markWebRemixFailed(videoId)
                     YouTubeStreamResolver.invalidate(videoId)
+                    // A rejected URL often means the player config the cipher used has rotated. The
+                    // refresh is fire-and-forget: this recovery attempt proceeds either way, and a
+                    // config change only affects subsequent extractions.
+                    serviceScope.launch {
+                        runCatching { YouTubeStreamExtractor.refreshAfterStreamRejection() }
+                            .onFailure { Timber.tag("playback").w(it, "Cipher config refresh failed") }
+                    }
                     val currentPos = player.currentPosition
                     val mediaItem = player.currentMediaItem
                     if (mediaItem != null) {

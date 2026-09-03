@@ -14,15 +14,20 @@ import androidx.media3.session.SessionToken
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
 import com.google.common.util.concurrent.MoreExecutors
-import com.kaon.music.core.data.model.AudioFormat
 import com.kaon.music.core.data.model.Track
+import com.kaon.music.core.data.repository.SettingsRepository
 import com.kaon.music.core.data.repository.TrackRepository
-import com.kaon.music.core.playback.model.PlaybackState
+import com.kaon.music.core.online.AudioQuality
+import com.kaon.music.core.online.AudioType
+import com.kaon.music.core.playback.model.NowPlaying
+import com.kaon.music.core.playback.model.PlaybackProgress
+import com.kaon.music.core.playback.model.PlaybackQueue
 import com.kaon.music.core.playback.model.RepeatMode
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -40,27 +45,45 @@ sealed interface PlaybackEvent {
 }
 
 /**
- * Process-scoped Playback Facade.
+ * Process-scoped playback facade — the only way UI reaches Media3.
  *
- * Implements ARCHITECTURE_ATTRIBUTED.md §3 & §12 and Milestone 2:
- * - Single point of entry for UI interactions with Media3 playback.
- * - Exposes immutable StateFlow<PlaybackState> and one-shot error events.
- * - Enforces identical-queue detection (seek instead of reset).
- * - Enforces granular queue timeline mutations (addMediaItem, moveMediaItem, removeMediaItem).
- * - "Kaon observes Media3; Kaon never mirrors Media3".
+ * ARCHITECTURE.md §3.2 and §4:
+ * - Exposes three flows partitioned by change frequency ([nowPlaying], [queue], [progress]) rather
+ *   than one object mixing 500 ms position ticks with the whole queue.
+ * - Derives state from Media3 callbacks. It never writes state it did not observe from the player,
+ *   so the facade cannot drift out of sync with the transport.
+ * - Enforces identical-queue detection (seek instead of rebuilding the timeline).
+ * - Enforces granular timeline mutations; `setMediaItems` only for an initial queue load.
  */
 class PlaybackFacade(
     private val context: Context,
-    private val trackRepository: TrackRepository
+    private val trackRepository: TrackRepository,
+    settingsRepository: SettingsRepository? = null
 ) {
     private val facadeScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
 
-    private val _playbackState = MutableStateFlow(PlaybackState())
-    val playbackState: StateFlow<PlaybackState> = _playbackState.asStateFlow()
+    private val _nowPlaying = MutableStateFlow(NowPlaying())
+    val nowPlaying: StateFlow<NowPlaying> = _nowPlaying.asStateFlow()
+
+    private val _queue = MutableStateFlow(PlaybackQueue())
+    val queue: StateFlow<PlaybackQueue> = _queue.asStateFlow()
+
+    private val _progress = MutableStateFlow(PlaybackProgress())
+    val progress: StateFlow<PlaybackProgress> = _progress.asStateFlow()
 
     @androidx.annotation.VisibleForTesting
-    internal fun updatePlaybackStateForTesting(state: PlaybackState) {
-        _playbackState.value = state
+    internal fun updateNowPlayingForTesting(state: NowPlaying) {
+        _nowPlaying.value = state
+    }
+
+    @androidx.annotation.VisibleForTesting
+    internal fun updateQueueForTesting(state: PlaybackQueue) {
+        _queue.value = state
+    }
+
+    @androidx.annotation.VisibleForTesting
+    internal fun updateProgressForTesting(state: PlaybackProgress) {
+        _progress.value = state
     }
 
     private val _oneShotEvents = MutableSharedFlow<PlaybackEvent>(extraBufferCapacity = 1)
@@ -68,28 +91,28 @@ class PlaybackFacade(
 
     private var controllerFuture: ListenableFuture<MediaController>? = null
     private var mediaController: MediaController? = null
+    private var playerListener: Player.Listener? = null
 
     private var positionPollJob: Job? = null
     private var preResolveEnabled = true
-    private var streamingQuality: com.kaon.music.core.online.AudioQuality = com.kaon.music.core.online.AudioQuality.AUTO
-    private var preferredAudioType: com.kaon.music.core.online.AudioType = com.kaon.music.core.online.AudioType.AUTO
+    private var streamingQuality: AudioQuality = AudioQuality.AUTO
+    private var preferredAudioType: AudioType = AudioType.AUTO
 
     init {
-        try {
-            val settingsRepo = com.kaon.music.core.data.repository.SettingsRepository(context)
+        // The settings repository is injected (ARCHITECTURE.md §4) rather than constructed here;
+        // constructing one produced a fourth independent DataStore collector for the same file.
+        if (settingsRepository != null) {
             facadeScope.launch {
                 try {
-                    settingsRepo.userSettingsFlow.collect { settings ->
+                    settingsRepository.userSettingsFlow.collect { settings ->
                         preResolveEnabled = settings.preResolveNextTracks
                         streamingQuality = settings.streamingQuality
                         preferredAudioType = settings.preferredAudioType
                     }
                 } catch (e: Throwable) {
-                    // Ignored in unit tests
+                    Timber.tag("PlaybackFacade").w(e, "Settings collection stopped")
                 }
             }
-        } catch (e: Throwable) {
-            // Ignored in headless unit tests
         }
         try {
             connectToService()
@@ -127,7 +150,7 @@ class PlaybackFacade(
                     mediaController = controller
                     attachPlayerListener(controller)
                     updateFullState(controller)
-                    _playbackState.update { it.copy(isConnected = true) }
+                    _nowPlaying.update { it.copy(isConnected = true) }
                     Timber.tag("PlaybackFacade").i("Connected to MediaSessionService")
                 }
             } catch (e: Exception) {
@@ -137,9 +160,9 @@ class PlaybackFacade(
     }
 
     private fun attachPlayerListener(player: Player) {
-        player.addListener(object : Player.Listener {
+        val listener = object : Player.Listener {
             override fun onIsPlayingChanged(isPlaying: Boolean) {
-                _playbackState.update { it.copy(isPlaying = isPlaying) }
+                _nowPlaying.update { it.copy(isPlaying = isPlaying) }
                 if (isPlaying) {
                     startPositionPolling()
                 } else {
@@ -151,14 +174,15 @@ class PlaybackFacade(
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
                 facadeScope.launch {
                     val track = mediaItem?.let { item -> resolveTrack(item) }
-                    _playbackState.update {
+                    _nowPlaying.update {
                         it.copy(
                             currentTrack = track,
                             currentIndex = player.currentMediaItemIndex,
-                            durationMs = player.duration.coerceAtLeast(0L),
-                            playbackPositionMs = player.currentPosition.coerceAtLeast(0L)
+                            durationMs = player.duration.coerceAtLeast(0L)
                         )
                     }
+                    _queue.update { it.copy(currentIndex = player.currentMediaItemIndex) }
+                    updatePosition(player)
                     triggerNextTracksPreResolution()
                 }
             }
@@ -168,30 +192,20 @@ class PlaybackFacade(
             }
 
             override fun onPlaybackStateChanged(playbackState: Int) {
-                _playbackState.update {
-                    it.copy(
-                        durationMs = player.duration.coerceAtLeast(0L),
-                        bufferedPositionMs = player.bufferedPosition.coerceAtLeast(0L)
-                    )
-                }
+                _nowPlaying.update { it.copy(durationMs = player.duration.coerceAtLeast(0L)) }
+                updatePosition(player)
             }
 
             override fun onShuffleModeEnabledChanged(shuffleModeEnabled: Boolean) {
-                _playbackState.update { it.copy(isShuffleEnabled = shuffleModeEnabled) }
+                _nowPlaying.update { it.copy(isShuffleEnabled = shuffleModeEnabled) }
             }
 
             override fun onRepeatModeChanged(repeatMode: Int) {
-                _playbackState.update {
-                    it.copy(
-                        repeatMode = when (repeatMode) {
-                            Player.REPEAT_MODE_ONE -> RepeatMode.ONE
-                            Player.REPEAT_MODE_ALL -> RepeatMode.ALL
-                            else -> RepeatMode.OFF
-                        }
-                    )
-                }
+                _nowPlaying.update { it.copy(repeatMode = repeatMode.toRepeatMode()) }
             }
-        })
+        }
+        playerListener = listener
+        player.addListener(listener)
     }
 
     private fun updateFullState(player: Player) {
@@ -199,22 +213,17 @@ class PlaybackFacade(
 
         facadeScope.launch {
             val track = currentMediaItem?.let { item -> resolveTrack(item) }
-            _playbackState.update {
+            _nowPlaying.update {
                 it.copy(
                     currentTrack = track,
                     isPlaying = player.isPlaying,
-                    playbackPositionMs = player.currentPosition.coerceAtLeast(0L),
                     durationMs = player.duration.coerceAtLeast(0L),
-                    bufferedPositionMs = player.bufferedPosition.coerceAtLeast(0L),
+                    currentIndex = player.currentMediaItemIndex,
                     isShuffleEnabled = player.shuffleModeEnabled,
-                    repeatMode = when (player.repeatMode) {
-                        Player.REPEAT_MODE_ONE -> RepeatMode.ONE
-                        Player.REPEAT_MODE_ALL -> RepeatMode.ALL
-                        else -> RepeatMode.OFF
-                    },
-                    currentIndex = player.currentMediaItemIndex
+                    repeatMode = player.repeatMode.toRepeatMode()
                 )
             }
+            updatePosition(player)
             updateQueueFromTimeline(player)
             if (player.isPlaying) {
                 startPositionPolling()
@@ -230,12 +239,10 @@ class PlaybackFacade(
                     resolveTrack(player.getMediaItemAt(i))?.let(::add)
                 }
             }
-            _playbackState.update {
-                it.copy(
-                    queue = queueTracks,
-                    currentIndex = player.currentMediaItemIndex
-                )
-            }
+            _queue.value = PlaybackQueue(
+                tracks = queueTracks,
+                currentIndex = player.currentMediaItemIndex
+            )
         }
     }
 
@@ -246,7 +253,9 @@ class PlaybackFacade(
                 mediaController?.let { player ->
                     updatePosition(player)
                 }
-                // Battery rule (M2 Stage 4): position ticks ~500ms while playing, none while paused
+                // Battery rule: position ticks ~500ms while playing, none while paused. Only
+                // PlaybackProgress is written here, so a tick cannot invalidate queue or library
+                // state (ARCHITECTURE.md §3.2).
                 delay(500)
             }
         }
@@ -258,13 +267,17 @@ class PlaybackFacade(
     }
 
     private fun updatePosition(player: Player) {
-        _playbackState.update {
-            it.copy(
-                playbackPositionMs = player.currentPosition.coerceAtLeast(0L),
-                durationMs = player.duration.coerceAtLeast(0L),
-                bufferedPositionMs = player.bufferedPosition.coerceAtLeast(0L)
-            )
-        }
+        _progress.value = PlaybackProgress(
+            positionMs = player.currentPosition.coerceAtLeast(0L),
+            durationMs = player.duration.coerceAtLeast(0L),
+            bufferedPositionMs = player.bufferedPosition.coerceAtLeast(0L)
+        )
+    }
+
+    private fun Int.toRepeatMode(): RepeatMode = when (this) {
+        Player.REPEAT_MODE_ONE -> RepeatMode.ONE
+        Player.REPEAT_MODE_ALL -> RepeatMode.ALL
+        else -> RepeatMode.OFF
     }
 
     // ==================== Intent Methods (UI Actions) ====================
@@ -295,20 +308,24 @@ class PlaybackFacade(
     }
 
     fun seekTo(positionMs: Long) {
-        mediaController?.seekTo(positionMs)
-        _playbackState.update { it.copy(playbackPositionMs = positionMs) }
+        val controller = mediaController ?: return
+        controller.seekTo(positionMs)
+        // Reading straight back from the player keeps this an observation rather than an optimistic
+        // write (ARCHITECTURE.md §4). The player has already applied the seek synchronously.
+        updatePosition(controller)
     }
 
     /**
      * Tapping a track sets the queue starting at the tapped track.
-     * Identical-Queue Detection (M2 Stage 2 / Acceptance Criteria):
-     * If the tapped context matches the current queue, seek instead of rebuilding/resetting.
+     *
+     * Identical-queue detection: if the tapped context matches the current queue, seek instead of
+     * rebuilding the timeline, which would otherwise restart the currently playing item.
      */
     fun playTrack(track: Track, queue: List<Track>) {
         val controller = mediaController ?: return
         if (queue.isEmpty()) return
 
-        val currentQueue = _playbackState.value.queue
+        val currentQueue = _queue.value.tracks
         val isIdenticalQueue = currentQueue.isNotEmpty() &&
                 currentQueue.size == queue.size &&
                 currentQueue.indices.all { i -> currentQueue[i].id == queue[i].id }
@@ -415,23 +432,17 @@ class PlaybackFacade(
     }
 
     /**
-     * Clears all queue items and stops playback (M2 Failure matrix #12).
+     * Clears all queue items and stops playback.
+     *
+     * `clearMediaItems` triggers `onTimelineChanged`/`onMediaItemTransition`, so the resulting empty
+     * state arrives through the listeners like any other transport change rather than being written
+     * here (ARCHITECTURE.md §4).
      */
     fun clearQueue() {
         val controller = mediaController ?: return
         preResolutionJob?.cancel()
         controller.stop()
         controller.clearMediaItems()
-        _playbackState.update {
-            it.copy(
-                currentTrack = null,
-                queue = emptyList(),
-                currentIndex = -1,
-                isPlaying = false,
-                playbackPositionMs = 0L,
-                durationMs = 0L
-            )
-        }
     }
 
     fun toggleShuffle() {
@@ -449,10 +460,20 @@ class PlaybackFacade(
         controller.repeatMode = nextMode
     }
 
+    /**
+     * Releases the controller, its listener, and the facade scope.
+     *
+     * Called from [com.kaon.music.app.di.AppContainer] teardown paths only; the facade is
+     * process-scoped, so in normal operation it lives until the process dies.
+     */
     fun release() {
         stopPositionPolling()
+        playerListener?.let { listener -> mediaController?.removeListener(listener) }
+        playerListener = null
         controllerFuture?.let { MediaController.releaseFuture(it) }
+        controllerFuture = null
         mediaController = null
+        facadeScope.cancel()
     }
 
     private fun Track.toMediaItem(): MediaItem {

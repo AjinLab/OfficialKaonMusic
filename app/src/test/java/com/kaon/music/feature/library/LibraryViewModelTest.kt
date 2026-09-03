@@ -139,7 +139,10 @@ class LibraryViewModelTest {
         viewModel = LibraryViewModel(
             trackRepository = trackRepository,
             playbackFacade = playbackFacade,
-            playlistRepository = playlistRepository
+            playlistRepository = playlistRepository,
+            // Keep the sort/filter pipeline on the test dispatcher; production runs it on
+            // Dispatchers.Default, which the test scheduler cannot advance.
+            computeDispatcher = mainDispatcherRule.testDispatcher
         )
     }
 

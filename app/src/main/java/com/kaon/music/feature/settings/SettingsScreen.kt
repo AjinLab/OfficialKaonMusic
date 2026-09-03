@@ -31,7 +31,6 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -39,6 +38,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.kaon.music.core.designsystem.theme.KaonBackground
 import com.kaon.music.core.designsystem.theme.KaonPrimary
 import com.kaon.music.core.designsystem.theme.KaonSurfaceElevated
@@ -59,10 +59,10 @@ fun SettingsScreen(
     bottomPadding: PaddingValues,
     modifier: Modifier = Modifier
 ) {
-    val settings by viewModel.settings.collectAsState()
-    val selectedSection by viewModel.selectedSection.collectAsState()
-    val isSyncing by viewModel.isSyncing.collectAsState()
-    val userMessage by viewModel.userMessage.collectAsState()
+    val settings by viewModel.settings.collectAsStateWithLifecycle()
+    val selectedSection by viewModel.selectedSection.collectAsStateWithLifecycle()
+    val isSyncing by viewModel.isSyncing.collectAsStateWithLifecycle()
+    val userMessage by viewModel.userMessage.collectAsStateWithLifecycle()
 
     val snackbarHostState = remember { SnackbarHostState() }
 

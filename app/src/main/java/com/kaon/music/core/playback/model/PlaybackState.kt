@@ -9,20 +9,54 @@ enum class RepeatMode {
 }
 
 /**
- * Immutable playback state exposed to the UI via PlaybackFacade.
+ * Playback state, partitioned by change frequency (ARCHITECTURE.md §3.2).
+ *
+ * The single object this replaced carried the 500 ms-ticking position alongside the whole queue.
+ * Because that object was a `combine` source in three screen ViewModels, every position tick
+ * re-ran full-library sorting and filtering on the main dispatcher. Splitting by change frequency
+ * is what makes that structurally impossible rather than merely discouraged.
  */
-data class PlaybackState(
+
+/**
+ * Changes on track transition, play/pause, and mode changes — rare.
+ *
+ * Safe for any ViewModel to observe.
+ */
+data class NowPlaying(
     val currentTrack: Track? = null,
     val isPlaying: Boolean = false,
-    val playbackPositionMs: Long = 0L,
     val durationMs: Long = 0L,
-    val bufferedPositionMs: Long = 0L,
+    val currentIndex: Int = -1,
     val isShuffleEnabled: Boolean = false,
     val repeatMode: RepeatMode = RepeatMode.OFF,
-    val queue: List<Track> = emptyList(),
-    val currentIndex: Int = -1,
     val isConnected: Boolean = false
+)
+
+/**
+ * Changes on queue mutation — rare. Observed by the player screen only.
+ *
+ * Holds resolved [Track]s because the queue sheet renders titles and artwork directly. Resolution
+ * happens once per timeline change in the facade, not once per observer.
+ */
+data class PlaybackQueue(
+    val tracks: List<Track> = emptyList(),
+    val currentIndex: Int = -1
+)
+
+/**
+ * Changes every 500 ms while playing.
+ *
+ * Must be read at the leaf composable that draws it. Never hoist this into a screen-level UI state
+ * object and never make it a `combine` source alongside library data.
+ */
+data class PlaybackProgress(
+    val positionMs: Long = 0L,
+    val durationMs: Long = 0L,
+    val bufferedPositionMs: Long = 0L
 ) {
-    val progress: Float
-        get() = if (durationMs > 0) (playbackPositionMs.toFloat() / durationMs).coerceIn(0f, 1f) else 0f
+    val fraction: Float
+        get() = if (durationMs > 0) (positionMs.toFloat() / durationMs).coerceIn(0f, 1f) else 0f
+
+    val bufferedFraction: Float
+        get() = if (durationMs > 0) (bufferedPositionMs.toFloat() / durationMs).coerceIn(0f, 1f) else 0f
 }

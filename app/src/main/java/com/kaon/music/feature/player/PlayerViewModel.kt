@@ -1,5 +1,6 @@
 package com.kaon.music.feature.player
 
+import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.kaon.music.core.data.model.LyricsResult
@@ -9,7 +10,9 @@ import com.kaon.music.core.data.repository.MetadataRepository
 import com.kaon.music.core.data.repository.PlaylistRepository
 import com.kaon.music.core.data.repository.TrackRepository
 import com.kaon.music.core.playback.PlaybackFacade
-import com.kaon.music.core.playback.model.PlaybackState
+import com.kaon.music.core.playback.model.NowPlaying
+import com.kaon.music.core.playback.model.PlaybackProgress
+import com.kaon.music.core.playback.model.PlaybackQueue
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -20,28 +23,58 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
+/**
+ * Player screen state holder.
+ *
+ * ARCHITECTURE.md §3.2: exposes [nowPlaying], [queue], and [progress] as three separate flows. The
+ * player is the only screen permitted to observe [progress]; screens that only need to know which
+ * track is active observe [nowPlaying].
+ */
 class PlayerViewModel(
     private val playbackFacade: PlaybackFacade,
     private val trackRepository: TrackRepository,
     private val playlistRepository: PlaylistRepository? = null,
-    private val metadataRepository: MetadataRepository? = null
+    private val metadataRepository: MetadataRepository? = null,
+    private val savedStateHandle: SavedStateHandle = SavedStateHandle()
 ) : ViewModel() {
 
-    val playbackState: StateFlow<PlaybackState> = playbackFacade.playbackState
+    val nowPlaying: StateFlow<NowPlaying> = playbackFacade.nowPlaying
         .stateIn(
             scope = viewModelScope,
             started = SharingStarted.WhileSubscribed(5000),
-            initialValue = PlaybackState()
+            initialValue = NowPlaying()
         )
 
-    private val _isFullPlayerExpanded = MutableStateFlow(false)
-    val isFullPlayerExpanded: StateFlow<Boolean> = _isFullPlayerExpanded.asStateFlow()
+    val queue: StateFlow<PlaybackQueue> = playbackFacade.queue
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = PlaybackQueue()
+        )
 
-    private val _isQueueSheetVisible = MutableStateFlow(false)
-    val isQueueSheetVisible: StateFlow<Boolean> = _isQueueSheetVisible.asStateFlow()
+    /**
+     * Ticks every 500 ms during playback. Read only where progress is drawn — never fold this into a
+     * screen-level state object.
+     */
+    val progress: StateFlow<PlaybackProgress> = playbackFacade.progress
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = PlaybackProgress()
+        )
 
-    private val _isLyricsSheetVisible = MutableStateFlow(false)
-    val isLyricsSheetVisible: StateFlow<Boolean> = _isLyricsSheetVisible.asStateFlow()
+    /**
+     * Survives configuration change and process death via [SavedStateHandle] (ARCHITECTURE.md §5.5).
+     * Previously a plain MutableStateFlow, so rotating with the full player open collapsed it.
+     */
+    val isFullPlayerExpanded: StateFlow<Boolean> =
+        savedStateHandle.getStateFlow(KEY_FULL_PLAYER_EXPANDED, false)
+
+    val isQueueSheetVisible: StateFlow<Boolean> =
+        savedStateHandle.getStateFlow(KEY_QUEUE_SHEET_VISIBLE, false)
+
+    val isLyricsSheetVisible: StateFlow<Boolean> =
+        savedStateHandle.getStateFlow(KEY_LYRICS_SHEET_VISIBLE, false)
 
     private val _lyricsState = MutableStateFlow<LyricsResult?>(null)
     val lyricsState: StateFlow<LyricsResult?> = _lyricsState.asStateFlow()
@@ -56,7 +89,7 @@ class PlayerViewModel(
 
     init {
         viewModelScope.launch {
-            playbackFacade.playbackState
+            playbackFacade.nowPlaying
                 .map { it.currentTrack }
                 .distinctUntilChanged()
                 .collect { track ->
@@ -96,33 +129,35 @@ class PlayerViewModel(
     }
 
     fun expandFullPlayer() {
-        _isFullPlayerExpanded.value = true
+        savedStateHandle[KEY_FULL_PLAYER_EXPANDED] = true
     }
 
     fun collapseFullPlayer() {
-        _isFullPlayerExpanded.value = false
-        _isQueueSheetVisible.value = false
-        _isLyricsSheetVisible.value = false
+        savedStateHandle[KEY_FULL_PLAYER_EXPANDED] = false
+        savedStateHandle[KEY_QUEUE_SHEET_VISIBLE] = false
+        savedStateHandle[KEY_LYRICS_SHEET_VISIBLE] = false
     }
 
-    fun toggleQueueSheet() {
-        _isQueueSheetVisible.value = !_isQueueSheetVisible.value
-        if (_isQueueSheetVisible.value) {
-            _isLyricsSheetVisible.value = false
-        }
+    fun setQueueSheetVisible(visible: Boolean) {
+        savedStateHandle[KEY_QUEUE_SHEET_VISIBLE] = visible
+        if (visible) savedStateHandle[KEY_LYRICS_SHEET_VISIBLE] = false
     }
 
-    fun toggleLyricsSheet() {
-        _isLyricsSheetVisible.value = !_isLyricsSheetVisible.value
-        if (_isLyricsSheetVisible.value) {
-            _isQueueSheetVisible.value = false
-            playbackState.value.currentTrack?.let { track ->
+    fun setLyricsSheetVisible(visible: Boolean) {
+        savedStateHandle[KEY_LYRICS_SHEET_VISIBLE] = visible
+        if (visible) {
+            savedStateHandle[KEY_QUEUE_SHEET_VISIBLE] = false
+            nowPlaying.value.currentTrack?.let { track ->
                 if (_lyricsState.value == null && !_isLoadingLyrics.value) {
                     fetchLyricsAndMetadata(track)
                 }
             }
         }
     }
+
+    fun toggleQueueSheet() = setQueueSheetVisible(!isQueueSheetVisible.value)
+
+    fun toggleLyricsSheet() = setLyricsSheetVisible(!isLyricsSheetVisible.value)
 
     fun togglePlayPause() {
         playbackFacade.togglePlayPause()
@@ -169,12 +204,18 @@ class PlayerViewModel(
 
     fun saveQueueAsPlaylist(name: String, onComplete: () -> Unit = {}) {
         val repo = playlistRepository ?: return
-        val currentQueue = playbackFacade.playbackState.value.queue
+        val currentQueue = playbackFacade.queue.value.tracks
         if (currentQueue.isEmpty()) return
         viewModelScope.launch {
             val playlistId = repo.createPlaylist(name)
             repo.addTracksToPlaylist(playlistId, currentQueue.map { it.id })
             onComplete()
         }
+    }
+
+    private companion object {
+        const val KEY_FULL_PLAYER_EXPANDED = "player.fullExpanded"
+        const val KEY_QUEUE_SHEET_VISIBLE = "player.queueSheetVisible"
+        const val KEY_LYRICS_SHEET_VISIBLE = "player.lyricsSheetVisible"
     }
 }

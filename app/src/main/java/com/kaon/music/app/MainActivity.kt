@@ -10,17 +10,18 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.viewModels
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -28,6 +29,8 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.kaon.music.app.di.KaonViewModelFactory
 import com.kaon.music.core.designsystem.theme.KaonTheme
 import com.kaon.music.core.playback.KaonPlaybackService
 import com.kaon.music.feature.home.HomeScreen
@@ -46,8 +49,22 @@ import com.kaon.music.feature.settings.SettingsViewModel
 
 class MainActivity : ComponentActivity() {
 
-    private var libraryViewModelRef: LibraryViewModel? = null
-    private var playerViewModelRef: PlayerViewModel? = null
+    /**
+     * ARCHITECTURE.md §5.5: ViewModels come from the Activity's ViewModelStore, so they survive
+     * configuration change, are cleared exactly once, and expose a SavedStateHandle. Holding them as
+     * Activity properties (rather than assigning fields from inside a `remember` block during
+     * composition) is also what makes them available to [onCreate] and [onNewIntent] — the previous
+     * arrangement read a still-null reference when handling the notification intent on a cold start.
+     */
+    private val viewModelFactory by lazy {
+        KaonViewModelFactory((application as KaonApplication).container, this)
+    }
+
+    private val homeViewModel: HomeViewModel by viewModels { viewModelFactory }
+    private val searchViewModel: SearchViewModel by viewModels { viewModelFactory }
+    private val libraryViewModel: LibraryViewModel by viewModels { viewModelFactory }
+    private val playerViewModel: PlayerViewModel by viewModels { viewModelFactory }
+    private val settingsViewModel: SettingsViewModel by viewModels { viewModelFactory }
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -58,65 +75,17 @@ class MainActivity : ComponentActivity() {
             permissions[Manifest.permission.READ_EXTERNAL_STORAGE] == true
         }
 
-        libraryViewModelRef?.setPermissionState(audioGranted)
+        libraryViewModel.setPermissionState(audioGranted)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
-        val app = application as KaonApplication
-        val container = app.container
-
         setContent {
-            val settingsViewModel = remember {
-                SettingsViewModel(
-                    settingsRepository = container.settingsRepository,
-                    trackRepository = container.trackRepository,
-                    historyRepository = container.historyRepository,
-                    youtubeSessionManager = container.youtubeSessionManager
-                )
-            }
-            val userSettings by settingsViewModel.settings.collectAsState()
+            val userSettings by settingsViewModel.settings.collectAsStateWithLifecycle()
 
             KaonTheme(userSettings = userSettings) {
-                val homeViewModel = remember {
-                    HomeViewModel(
-                        trackRepository = container.trackRepository,
-                        playbackFacade = container.playbackFacade
-                    )
-                }
-
-                val searchViewModel = remember {
-                    SearchViewModel(
-                        trackRepository = container.trackRepository,
-                        playbackFacade = container.playbackFacade,
-                        playlistRepository = container.playlistRepository
-                    )
-                }
-
-                val libraryViewModel = remember {
-                    LibraryViewModel(
-                        trackRepository = container.trackRepository,
-                        playbackFacade = container.playbackFacade,
-                        playlistRepository = container.playlistRepository
-                    ).also {
-                        libraryViewModelRef = it
-                        it.setPermissionState(hasStoragePermission())
-                    }
-                }
-
-                val playerViewModel = remember {
-                    PlayerViewModel(
-                        playbackFacade = container.playbackFacade,
-                        trackRepository = container.trackRepository,
-                        playlistRepository = container.playlistRepository,
-                        metadataRepository = container.metadataRepository
-                    ).also {
-                        playerViewModelRef = it
-                    }
-                }
-
                 MainScreenContent(
                     homeViewModel = homeViewModel,
                     searchViewModel = searchViewModel,
@@ -140,7 +109,7 @@ class MainActivity : ComponentActivity() {
 
     private fun handleNotificationIntent(intent: Intent?) {
         if (intent?.getBooleanExtra(KaonPlaybackService.EXTRA_EXPAND_PLAYER, false) == true) {
-            playerViewModelRef?.expandFullPlayer()
+            playerViewModel.expandFullPlayer()
         }
     }
 
@@ -172,7 +141,7 @@ class MainActivity : ComponentActivity() {
         if (permissions.isNotEmpty()) {
             permissionLauncher.launch(permissions.toTypedArray())
         } else {
-            libraryViewModelRef?.setPermissionState(true)
+            libraryViewModel.setPermissionState(hasStoragePermission())
         }
     }
 }
@@ -186,15 +155,31 @@ private fun MainScreenContent(
     settingsViewModel: SettingsViewModel,
     onRequestPermission: () -> Unit
 ) {
-    var currentScreen by remember { mutableStateOf(AppScreen.HOME) }
-    var isSettingsOpen by remember { mutableStateOf(false) }
+    // Saveable so the active tab survives rotation and process death (ARCHITECTURE.md §5.5).
+    var currentScreen by rememberSaveable { mutableStateOf(AppScreen.HOME) }
+    var isSettingsOpen by rememberSaveable { mutableStateOf(false) }
 
-    val playbackState by playerViewModel.playbackState.collectAsState()
-    val isFullPlayerExpanded by playerViewModel.isFullPlayerExpanded.collectAsState()
-    val lyrics by playerViewModel.lyricsState.collectAsState()
-    val isLoadingLyrics by playerViewModel.isLoadingLyrics.collectAsState()
+    // ARCHITECTURE.md §3.2: only NowPlaying and the queue emptiness flag are read here. Playback
+    // progress is deliberately not observed at this level — it ticks every 500 ms, and reading it in
+    // the root composable invalidated the whole tree including every screen below.
+    val nowPlaying by playerViewModel.nowPlaying.collectAsStateWithLifecycle()
+    val queue by playerViewModel.queue.collectAsStateWithLifecycle()
+    val isFullPlayerExpanded by playerViewModel.isFullPlayerExpanded.collectAsStateWithLifecycle()
+    val lyrics by playerViewModel.lyricsState.collectAsStateWithLifecycle()
+    val isLoadingLyrics by playerViewModel.isLoadingLyrics.collectAsStateWithLifecycle()
 
-    val hasActiveQueue = playbackState.queue.isNotEmpty() && playbackState.currentTrack != null
+    val currentTrack = nowPlaying.currentTrack
+    val dockedTrack = currentTrack?.takeIf { queue.tracks.isNotEmpty() }
+
+    // Root back handling: returning to Home from another tab, and closing settings. Without this,
+    // back on the Search or Library tab exited the app.
+    BackHandler(enabled = isSettingsOpen || currentScreen != AppScreen.HOME) {
+        if (isSettingsOpen) {
+            isSettingsOpen = false
+        } else {
+            currentScreen = AppScreen.HOME
+        }
+    }
 
     // The docked mini-player and bottom bar overlay the screen content, so screens are told
     // how much space to reserve. Measuring the overlay keeps that in sync with the mini-player
@@ -272,18 +257,16 @@ private fun MainScreenContent(
                 .align(Alignment.BottomCenter)
                 .onSizeChanged { bottomOverlayHeightPx = it.height }
         ) {
-            if (hasActiveQueue) {
-                playbackState.currentTrack?.let { track ->
-                    MiniPlayer(
-                        track = track,
-                        isPlaying = playbackState.isPlaying,
-                        progressFraction = playbackState.progress,
-                        isFavorite = track.isFavorite,
-                        onPlayPauseClick = playerViewModel::togglePlayPause,
-                        onFavoriteClick = { playerViewModel.toggleFavorite(track.id) },
-                        onClick = playerViewModel::expandFullPlayer
-                    )
-                }
+            if (dockedTrack != null) {
+                MiniPlayer(
+                    track = dockedTrack,
+                    isPlaying = nowPlaying.isPlaying,
+                    progress = playerViewModel.progress,
+                    isFavorite = dockedTrack.isFavorite,
+                    onPlayPauseClick = playerViewModel::togglePlayPause,
+                    onFavoriteClick = { playerViewModel.toggleFavorite(dockedTrack.id) },
+                    onClick = playerViewModel::expandFullPlayer
+                )
             }
 
             BottomNavigationBar(
@@ -298,7 +281,9 @@ private fun MainScreenContent(
         // Full-Screen Player Overlay (App Overlay)
         FullPlayerOverlay(
             isExpanded = isFullPlayerExpanded,
-            playbackState = playbackState,
+            nowPlaying = nowPlaying,
+            queue = queue,
+            progressFlow = playerViewModel.progress,
             onCollapse = playerViewModel::collapseFullPlayer,
             onPlayPauseClick = playerViewModel::togglePlayPause,
             onSkipNextClick = playerViewModel::skipNext,
@@ -314,7 +299,7 @@ private fun MainScreenContent(
             lyrics = lyrics,
             isLoadingLyrics = isLoadingLyrics,
             onRefreshLyrics = {
-                playbackState.currentTrack?.let { playerViewModel.fetchLyricsAndMetadata(it) }
+                nowPlaying.currentTrack?.let { playerViewModel.fetchLyricsAndMetadata(it) }
             }
         )
     }

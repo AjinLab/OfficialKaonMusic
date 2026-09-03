@@ -4,7 +4,6 @@ import com.kaon.music.core.data.db.dao.QueueSnapshotDao
 import com.kaon.music.core.data.db.entity.QueueSnapshotEntity
 import com.kaon.music.core.data.model.QueueSnapshot
 import com.kaon.music.core.data.model.Track
-import com.kaon.music.core.playback.model.PlaybackState
 import com.kaon.music.core.playback.model.RepeatMode
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers

@@ -247,7 +247,8 @@ class SearchViewModelTest {
             trackRepository = trackRepository,
             playbackFacade = playbackFacade,
             networkConnectivityMonitor = FakeNetworkMonitor(false),
-            playlistRepository = playlistRepository
+            playlistRepository = playlistRepository,
+            computeDispatcher = mainDispatcherRule.testDispatcher
         )
     }
 

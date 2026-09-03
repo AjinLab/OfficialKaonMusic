@@ -1,7 +1,12 @@
 package com.kaon.music.app
 
 import android.app.Application
+import com.kaon.music.BuildConfig
 import com.kaon.music.app.di.AppContainer
+import com.kaon.music.core.logging.ReleaseTree
+import com.kaon.music.core.online.YouTubeStreamExtractor
+import com.kaon.music.core.playback.YouTubeStreamResolver
+import kotlinx.coroutines.launch
 import timber.log.Timber
 
 class KaonApplication : Application() {
@@ -12,17 +17,22 @@ class KaonApplication : Application() {
     override fun onCreate() {
         super.onCreate()
 
-        // 1. Initialize Timber tagged logging (ARCHITECTURE_ATTRIBUTED.md §17 / k3.md D9)
-        Timber.plant(Timber.DebugTree())
+        // ARCHITECTURE.md §5.3: a DebugTree in release publishes every DEBUG statement — including
+        // token material from the extraction layer — to logcat.
+        Timber.plant(if (BuildConfig.DEBUG) Timber.DebugTree() else ReleaseTree())
 
-        // 2. Initialize application dependency container
         container = AppContainer(this)
 
-        // Bootstrap the shared InnerTube session before any screen or playback service makes a
-        // request. The service reuses this instance instead of creating a second session loader.
-        container.youtubeSessionManager
+        // Context handoff only: both calls just store an application reference (ARCHITECTURE.md §5.4
+        // — no file I/O, JSON parsing, or network in onCreate).
+        YouTubeStreamExtractor.initialize(this)
+        YouTubeStreamResolver.attachContext(this)
 
-        // 3. Initialize YouTube Cipher deobfuscator
-        com.kaon.music.core.online.cipher.CipherDeobfuscator.initialize(this)
+        // Session bootstrap and cipher warm-up are network-bound, so they run off the first frame.
+        // Both are best-effort: extraction tolerates a cold cipher and a null visitorData.
+        container.appScope.launch {
+            container.youtubeSessionManager
+            YouTubeStreamExtractor.prewarm()
+        }
     }
 }

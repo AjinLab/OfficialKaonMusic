@@ -1,5 +1,6 @@
 package com.kaon.music.feature.settings
 
+import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.kaon.music.core.data.online.YouTubeSessionManager
@@ -28,10 +29,14 @@ class SettingsViewModel(
     private val settingsRepository: SettingsRepository,
     private val trackRepository: TrackRepository,
     private val historyRepository: HistoryRepository? = null,
-    private val youtubeSessionManager: YouTubeSessionManager? = null
+    private val youtubeSessionManager: YouTubeSessionManager? = null,
+    private val savedStateHandle: SavedStateHandle = SavedStateHandle()
 ) : ViewModel() {
 
-    private val _selectedSection = MutableStateFlow<SettingsSection?>(null)
+    // Restored so rotating inside a settings subpage does not bounce the user back to the root list.
+    private val _selectedSection = MutableStateFlow(
+        savedStateHandle.get<String>(KEY_SECTION)?.let { runCatching { SettingsSection.valueOf(it) }.getOrNull() }
+    )
     val selectedSection: StateFlow<SettingsSection?> = _selectedSection.asStateFlow()
 
     private val _isSyncing = MutableStateFlow(false)
@@ -49,6 +54,7 @@ class SettingsViewModel(
 
     fun navigateToSection(section: SettingsSection?) {
         _selectedSection.value = section
+        savedStateHandle[KEY_SECTION] = section?.name
     }
 
     fun dismissUserMessage() {
@@ -192,5 +198,9 @@ class SettingsViewModel(
                 _userMessage.value = "Cache clear failed: ${e.message}"
             }
         }
+    }
+
+    private companion object {
+        const val KEY_SECTION = "settings.section"
     }
 }

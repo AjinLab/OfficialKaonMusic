@@ -16,12 +16,11 @@ junit = "4.13.2"
 junitVersion = "1.2.1"
 espressoCore = "3.6.1"
 material3 = "1.3.1"
-ktor = "3.1.0"
-kotlinxSerialization = "1.7.3"
+ktor = "3.5.2"
+kotlinxSerialization = "1.9.0"
 brotli = "0.1.2"
 desugaring = "2.1.4"
-extractor = "v0.24.4"
-innertubex = "v0.1.2"
+innertubex = "v0.5.1"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -70,7 +69,6 @@ ktor-serialization-json = { group = "io.ktor", name = "ktor-serialization-kotlin
 kotlinx-serialization-json = { group = "org.jetbrains.kotlinx", name = "kotlinx-serialization-json", version.ref = "kotlinxSerialization" }
 brotli = { group = "org.brotli", name = "dec", version.ref = "brotli" }
 desugaring = { group = "com.android.tools", name = "desugar_jdk_libs_nio", version.ref = "desugaring" }
-extractor = { module = "com.github.TeamNewPipe:NewPipeExtractor", version.ref = "extractor" }
 innertubex = { module = "com.github.MetrolistGroup.innertubex:innertubex", version.ref = "innertubex" }
 
 [plugins]

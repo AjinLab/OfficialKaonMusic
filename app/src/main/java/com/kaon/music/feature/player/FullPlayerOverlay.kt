@@ -71,6 +71,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -87,6 +88,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.kaon.music.core.artwork.SizeBucket
 import com.kaon.music.core.data.model.LyricsResult
 import com.kaon.music.core.data.model.Track
@@ -101,13 +103,26 @@ import com.kaon.music.core.designsystem.theme.KaonSurfaceElevated
 import com.kaon.music.core.designsystem.theme.KaonTextPrimary
 import com.kaon.music.core.designsystem.theme.KaonTextSecondary
 import com.kaon.music.core.designsystem.theme.KaonTextTertiary
-import com.kaon.music.core.playback.model.PlaybackState
+import com.kaon.music.core.playback.model.NowPlaying
+import com.kaon.music.core.playback.model.PlaybackProgress
+import com.kaon.music.core.playback.model.PlaybackQueue
 import com.kaon.music.core.playback.model.RepeatMode
+import kotlinx.coroutines.flow.StateFlow
 
+/**
+ * Expanded player.
+ *
+ * ARCHITECTURE.md §3.2: takes [nowPlaying] and [queue] as values, but [progressFlow] as a flow. The
+ * position ticks every 500 ms; collecting it here would recompose this entire 300-line column —
+ * artwork, queue item provider, lyrics list — twice per second, and did so even while collapsed.
+ * Only [PlayerScrubber] and [SyncedLyrics] observe it.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun FullPlayerOverlay(
-    playbackState: PlaybackState,
+    nowPlaying: NowPlaying,
+    queue: PlaybackQueue,
+    progressFlow: StateFlow<PlaybackProgress>,
     isExpanded: Boolean,
     onCollapse: () -> Unit,
     onPlayPauseClick: () -> Unit,
@@ -127,33 +142,25 @@ fun FullPlayerOverlay(
     onRefreshLyrics: () -> Unit = {}
 ) {
     AnimatedVisibility(
-        visible = isExpanded && playbackState.currentTrack != null,
+        visible = isExpanded && nowPlaying.currentTrack != null,
         enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
         exit = slideOutVertically(targetOffsetY = { it }) + fadeOut(),
         modifier = modifier.fillMaxSize()
     ) {
         // Null only during the exit animation after the queue is cleared; drawing nothing
         // avoids an opaque, non-dismissable panel.
-        val currentTrack = playbackState.currentTrack ?: return@AnimatedVisibility
+        val currentTrack = nowPlaying.currentTrack ?: return@AnimatedVisibility
 
         BackHandler(onBack = onCollapse)
 
         val context = LocalContext.current
-        var isSeeking by remember { mutableStateOf(false) }
-        var seekPositionFraction by remember { mutableFloatStateOf(0f) }
         var isQueueSheetVisible by remember { mutableStateOf(false) }
         var isLyricsSheetVisible by remember { mutableStateOf(false) }
         var isInfoDialogVisible by remember { mutableStateOf(false) }
         var isSavePlaylistDialogVisible by remember { mutableStateOf(false) }
         var playlistName by remember { mutableStateOf("") }
 
-        val duration = playbackState.durationMs.coerceAtLeast(1L)
-        val currentPos = if (isSeeking) {
-            (seekPositionFraction * duration).toLong()
-        } else {
-            playbackState.playbackPositionMs
-        }
-        val currentFraction = (currentPos.toFloat() / duration).coerceIn(0f, 1f)
+        val duration = nowPlaying.durationMs.coerceAtLeast(1L)
 
         Column(
             modifier = Modifier
@@ -296,45 +303,11 @@ fun FullPlayerOverlay(
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            // Scrubber Slider & Timestamps
-            Column(modifier = Modifier.fillMaxWidth()) {
-                Slider(
-                    value = if (isSeeking) seekPositionFraction else currentFraction,
-                    onValueChange = { fraction ->
-                        isSeeking = true
-                        seekPositionFraction = fraction
-                    },
-                    onValueChangeFinished = {
-                        val seekTargetMs = (seekPositionFraction * duration).toLong()
-                        onSeekTo(seekTargetMs)
-                        isSeeking = false
-                    },
-                    colors = SliderDefaults.colors(
-                        thumbColor = KaonPrimary,
-                        activeTrackColor = KaonPrimary,
-                        inactiveTrackColor = KaonDivider
-                    ),
-                    modifier = Modifier.fillMaxWidth()
-                )
-
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 4.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Text(
-                        text = formatDuration(currentPos),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = KaonTextSecondary
-                    )
-                    Text(
-                        text = formatDuration(duration),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = KaonTextSecondary
-                    )
-                }
-            }
+            PlayerScrubber(
+                progressFlow = progressFlow,
+                durationMs = duration,
+                onSeekTo = onSeekTo
+            )
 
             Spacer(modifier = Modifier.height(16.dp))
 
@@ -347,9 +320,9 @@ fun FullPlayerOverlay(
                 // Repeat Mode Button
                 IconButton(onClick = onToggleRepeat) {
                     Icon(
-                        imageVector = if (playbackState.repeatMode == RepeatMode.ONE) Icons.Default.RepeatOne else Icons.Default.Repeat,
+                        imageVector = if (nowPlaying.repeatMode == RepeatMode.ONE) Icons.Default.RepeatOne else Icons.Default.Repeat,
                         contentDescription = "Repeat",
-                        tint = if (playbackState.repeatMode != RepeatMode.OFF) KaonPrimary else KaonTextSecondary,
+                        tint = if (nowPlaying.repeatMode != RepeatMode.OFF) KaonPrimary else KaonTextSecondary,
                         modifier = Modifier.size(26.dp)
                     )
                 }
@@ -378,8 +351,8 @@ fun FullPlayerOverlay(
                 ) {
                     Box(contentAlignment = Alignment.Center) {
                         Icon(
-                            imageVector = if (playbackState.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                            contentDescription = if (playbackState.isPlaying) "Pause" else "Play",
+                            imageVector = if (nowPlaying.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                            contentDescription = if (nowPlaying.isPlaying) "Pause" else "Play",
                             tint = Color(0xFF141418),
                             modifier = Modifier.size(36.dp)
                         )
@@ -404,7 +377,7 @@ fun FullPlayerOverlay(
                     Icon(
                         imageVector = Icons.Default.Shuffle,
                         contentDescription = "Shuffle",
-                        tint = if (playbackState.isShuffleEnabled) KaonPrimary else KaonTextSecondary,
+                        tint = if (nowPlaying.isShuffleEnabled) KaonPrimary else KaonTextSecondary,
                         modifier = Modifier.size(26.dp)
                     )
                 }
@@ -532,11 +505,11 @@ fun FullPlayerOverlay(
                         }
                     } else if (lyrics != null && lyrics.syncedLyrics.isNotEmpty()) {
                         val listState = rememberLazyListState()
-                        // -1 while playback has not yet reached the first lyric line
-                        val activeLineIndex = lyrics.syncedLyrics.indexOfLast { it.timestampMs <= playbackState.playbackPositionMs }
+                        val activeLineIndex = rememberActiveLyricLine(progressFlow, lyrics)
 
                         LaunchedEffect(activeLineIndex) {
-                            if (activeLineIndex >= 2) {
+                            // Don't fight the user: skip auto-scroll while they are scrolling manually.
+                            if (activeLineIndex >= 2 && !listState.isScrollInProgress) {
                                 listState.animateScrollToItem(activeLineIndex - 2)
                             }
                         }
@@ -677,7 +650,7 @@ fun FullPlayerOverlay(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = "Now Playing Queue (${playbackState.queue.size})",
+                            text = "Now Playing Queue (${queue.tracks.size})",
                             style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
                             color = KaonTextPrimary
                         )
@@ -726,14 +699,16 @@ fun FullPlayerOverlay(
                             .height(420.dp)
                     ) {
                         itemsIndexed(
-                            items = playbackState.queue,
-                            key = { index, track -> "${track.id}_$index" }
+                            items = queue.tracks,
+                            // Keyed on identity only. Embedding the index meant removing item 0
+                            // changed every subsequent key, discarding item state across the mutation.
+                            key = { _, track -> track.id }
                         ) { index, track ->
-                            val isCurrent = index == playbackState.currentIndex
+                            val isCurrent = index == queue.currentIndex
                             QueueItemRow(
                                 track = track,
                                 index = index,
-                                totalCount = playbackState.queue.size,
+                                totalCount = queue.tracks.size,
                                 isCurrent = isCurrent,
                                 onToggleFavorite = { onToggleFavorite(track.id) },
                                 onMoveUp = { onMoveQueueItem(index, index - 1) },
@@ -760,7 +735,7 @@ fun FullPlayerOverlay(
                 text = {
                     Column {
                         Text(
-                            text = "Save all ${playbackState.queue.size} songs from your current queue into a new playlist.",
+                            text = "Save all ${queue.tracks.size} songs from your current queue into a new playlist.",
                             style = MaterialTheme.typography.bodyMedium,
                             color = KaonTextSecondary
                         )
@@ -796,6 +771,85 @@ fun FullPlayerOverlay(
             )
         }
     }
+}
+
+/**
+ * Seek bar and timestamps — the only part of the expanded player that observes playback position.
+ *
+ * Seek state is local: while the user drags, the thumb follows the gesture rather than the player, and
+ * the seek is committed once on release.
+ */
+@Composable
+private fun PlayerScrubber(
+    progressFlow: StateFlow<PlaybackProgress>,
+    durationMs: Long,
+    onSeekTo: (Long) -> Unit
+) {
+    val progress by progressFlow.collectAsStateWithLifecycle()
+    var isSeeking by remember { mutableStateOf(false) }
+    var seekPositionFraction by remember { mutableFloatStateOf(0f) }
+
+    val displayedFraction = if (isSeeking) seekPositionFraction else progress.fraction
+    val displayedPositionMs = if (isSeeking) (seekPositionFraction * durationMs).toLong() else progress.positionMs
+
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Slider(
+            value = displayedFraction,
+            onValueChange = { fraction ->
+                isSeeking = true
+                seekPositionFraction = fraction
+            },
+            onValueChangeFinished = {
+                onSeekTo((seekPositionFraction * durationMs).toLong())
+                isSeeking = false
+            },
+            colors = SliderDefaults.colors(
+                thumbColor = KaonPrimary,
+                activeTrackColor = KaonPrimary,
+                inactiveTrackColor = KaonDivider
+            ),
+            modifier = Modifier.fillMaxWidth()
+        )
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 4.dp),
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text(
+                text = formatDuration(displayedPositionMs),
+                style = MaterialTheme.typography.bodySmall,
+                color = KaonTextSecondary
+            )
+            Text(
+                text = formatDuration(durationMs),
+                style = MaterialTheme.typography.bodySmall,
+                color = KaonTextSecondary
+            )
+        }
+    }
+}
+
+/**
+ * Resolves the active synced-lyric line from playback position.
+ *
+ * The linear scan is unavoidable, but [derivedStateOf] confines it to ticks that actually change the
+ * highlighted line, so the lyrics list is not invalidated on every 500 ms emission.
+ */
+@Composable
+private fun rememberActiveLyricLine(
+    progressFlow: StateFlow<PlaybackProgress>,
+    lyrics: LyricsResult
+): Int {
+    val progress by progressFlow.collectAsStateWithLifecycle()
+    val activeLineIndex by remember(lyrics) {
+        derivedStateOf {
+            // -1 while playback has not yet reached the first lyric line
+            lyrics.syncedLyrics.indexOfLast { it.timestampMs <= progress.positionMs }
+        }
+    }
+    return activeLineIndex
 }
 
 @Composable

@@ -1,20 +1,29 @@
 package com.kaon.music.feature.library
 
+import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.kaon.music.core.data.model.Album
 import com.kaon.music.core.data.model.Artist
+import com.kaon.music.core.data.model.Playlist
 import com.kaon.music.core.data.model.Track
+import com.kaon.music.core.data.repository.PlaylistRepository
 import com.kaon.music.core.data.repository.TrackRepository
 import com.kaon.music.core.playback.PlaybackEvent
 import com.kaon.music.core.playback.PlaybackFacade
+import com.kaon.music.core.policy.LibraryPolicy
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import timber.log.Timber
@@ -44,14 +53,14 @@ data class LibraryUiState(
     val recentTracks: List<Track> = emptyList(),
     val mostPlayedTracks: List<Track> = emptyList(),
     val recentlyAddedTracks: List<Track> = emptyList(),
-    val playlists: List<com.kaon.music.core.data.model.Playlist> = emptyList(),
+    val playlists: List<Playlist> = emptyList(),
     val isLikedSongsSelected: Boolean = false,
     val selectedAlbum: Album? = null,
     val albumTracks: List<Track> = emptyList(),
     val selectedArtist: Artist? = null,
     val artistAlbums: List<Album> = emptyList(),
     val artistTracks: List<Track> = emptyList(),
-    val selectedPlaylist: com.kaon.music.core.data.model.Playlist? = null,
+    val selectedPlaylist: Playlist? = null,
     val playlistTracks: List<Track> = emptyList(),
     val isSyncing: Boolean = false,
     val hasPermission: Boolean = true,
@@ -65,20 +74,34 @@ data class LibraryUiState(
 class LibraryViewModel(
     private val trackRepository: TrackRepository,
     private val playbackFacade: PlaybackFacade,
-    private val playlistRepository: com.kaon.music.core.data.repository.PlaylistRepository
+    private val playlistRepository: PlaylistRepository,
+    private val savedStateHandle: SavedStateHandle = SavedStateHandle(),
+    // Injected so tests can drive the sort/filter pipeline on the test scheduler. Production keeps
+    // this work off the main thread (ARCHITECTURE.md §5.4).
+    private val computeDispatcher: CoroutineDispatcher = Dispatchers.Default
 ) : ViewModel() {
 
-    private val _selectedFilter = MutableStateFlow(LibraryFilter.TRACKS)
-    private val _trackSortOrder = MutableStateFlow(TrackSortOrder.TITLE_ASC)
-    private val _isLikedSongsSelected = MutableStateFlow(false)
+    // Browse selection is saved state (ARCHITECTURE.md §5.5): the active filter and sort order must
+    // survive rotation and process death. Album/artist/playlist selection is stored as an id and
+    // re-resolved from the database, because the full objects are not Parcelable and a stale copy
+    // would render outdated titles after a rescan.
+    private val _selectedFilter = MutableStateFlow(
+        savedStateHandle.get<String>(KEY_FILTER)?.let { runCatching { LibraryFilter.valueOf(it) }.getOrNull() }
+            ?: LibraryFilter.TRACKS
+    )
+    private val _trackSortOrder = MutableStateFlow(
+        savedStateHandle.get<String>(KEY_SORT)?.let { runCatching { TrackSortOrder.valueOf(it) }.getOrNull() }
+            ?: TrackSortOrder.TITLE_ASC
+    )
+    private val _isLikedSongsSelected = MutableStateFlow(savedStateHandle.get<Boolean>(KEY_LIKED) ?: false)
     private val _isSyncing = MutableStateFlow(false)
     private val _hasPermission = MutableStateFlow(true)
-    private val _searchQuery = MutableStateFlow("")
+    private val _searchQuery = MutableStateFlow(savedStateHandle.get<String>(KEY_QUERY) ?: "")
     private val _userMessage = MutableStateFlow<String?>(null)
 
     private val _selectedAlbum = MutableStateFlow<Album?>(null)
     private val _selectedArtist = MutableStateFlow<Artist?>(null)
-    private val _selectedPlaylist = MutableStateFlow<com.kaon.music.core.data.model.Playlist?>(null)
+    private val _selectedPlaylist = MutableStateFlow<Playlist?>(null)
 
     private val _filteredTracks = combine(
         trackRepository.observeAllTracks(),
@@ -181,7 +204,7 @@ class LibraryViewModel(
         val recentTracks: List<Track>,
         val mostPlayedTracks: List<Track>,
         val recentlyAddedTracks: List<Track>,
-        val playlists: List<com.kaon.music.core.data.model.Playlist>
+        val playlists: List<Playlist>
     )
 
     private data class DetailData(
@@ -194,7 +217,7 @@ class LibraryViewModel(
     private data class SelectedNav(
         val album: Album?,
         val artist: Artist?,
-        val playlist: com.kaon.music.core.data.model.Playlist?,
+        val playlist: Playlist?,
         val query: String
     )
 
@@ -210,7 +233,7 @@ class LibraryViewModel(
         val recent: List<Track>,
         val mostPlayed: List<Track>,
         val added: List<Track>,
-        val playlists: List<com.kaon.music.core.data.model.Playlist>
+        val playlists: List<Playlist>
     )
 
     private val _browseData = combine(
@@ -276,19 +299,25 @@ class LibraryViewModel(
         SelectedNav(album, artist, playlist, query)
     }
 
-    val uiState: StateFlow<LibraryUiState> = combine(
+    /**
+     * Library content, sorted and filtered.
+     *
+     * ARCHITECTURE.md §3.2 and §5.4: playback state is deliberately absent from this combine, and
+     * the whole chain runs on [Dispatchers.Default]. Previously the facade's single state object —
+     * which ticked every 500 ms — was a source here, so the full-library sort below re-ran twice per
+     * second on the main dispatcher.
+     */
+    private val libraryContent = combine(
         _browseData,
         _detailData,
         _metaData,
-        playbackFacade.playbackState,
         _navData
-    ) { browse, detail, meta, playback, nav ->
+    ) { browse, detail, meta, nav ->
         val sortedTracks = when (meta.sortOrder) {
             TrackSortOrder.TITLE_ASC -> browse.tracks.sortedBy { it.title.lowercase() }
             TrackSortOrder.RECENTLY_ADDED -> browse.tracks.sortedByDescending { it.dateAdded }
             TrackSortOrder.MOST_PLAYED -> {
-                val mostPlayedIds = browse.mostPlayedTracks.map { it.id }
-                val rankMap = mostPlayedIds.mapIndexed { index, id -> id to index }.toMap()
+                val rankMap = browse.mostPlayedTracks.withIndex().associate { (index, t) -> t.id to index }
                 val (played, unplayed) = browse.tracks.partition { rankMap.containsKey(it.id) }
                 val sortedPlayed = played.sortedBy { rankMap[it.id] }
                 val sortedUnplayed = unplayed.sortedBy { it.title.lowercase() }
@@ -307,8 +336,6 @@ class LibraryViewModel(
             mostPlayedTracks = browse.mostPlayedTracks,
             recentlyAddedTracks = browse.recentlyAddedTracks,
             playlists = browse.playlists,
-            activeTrackId = playback.currentTrack?.id,
-            isPlaying = playback.isPlaying,
             albumTracks = detail.albumTracks,
             artistAlbums = detail.artistAlbums,
             artistTracks = detail.artistTracks,
@@ -322,6 +349,15 @@ class LibraryViewModel(
             isLikedSongsSelected = meta.isLikedSongsSelected,
             searchQuery = nav.query
         )
+    }.flowOn(computeDispatcher)
+
+    val uiState: StateFlow<LibraryUiState> = combine(
+        libraryContent,
+        playbackFacade.nowPlaying
+            .map { it.currentTrack?.id to it.isPlaying }
+            .distinctUntilChanged()
+    ) { content, (activeTrackId, isPlaying) ->
+        content.copy(activeTrackId = activeTrackId, isPlaying = isPlaying)
     }.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5000),
@@ -340,19 +376,31 @@ class LibraryViewModel(
         }
     }
 
+    /**
+     * Selects a browse filter.
+     *
+     * Clearing [_selectedPlaylist] is required: LibraryScreen checks playlist detail before the
+     * filter, so leaving a playlist selected made every filter chip a no-op until the user pressed
+     * back.
+     */
     fun selectFilter(filter: LibraryFilter) {
         _selectedFilter.value = filter
+        savedStateHandle[KEY_FILTER] = filter.name
         _isLikedSongsSelected.value = false
+        savedStateHandle[KEY_LIKED] = false
         _selectedAlbum.value = null
         _selectedArtist.value = null
+        _selectedPlaylist.value = null
     }
 
     fun selectLikedSongs() {
         _isLikedSongsSelected.value = true
+        savedStateHandle[KEY_LIKED] = true
     }
 
     fun clearLikedSongs() {
         _isLikedSongsSelected.value = false
+        savedStateHandle[KEY_LIKED] = false
     }
 
     fun selectAlbum(album: Album) {
@@ -394,6 +442,7 @@ class LibraryViewModel(
 
     fun onSearchQueryChanged(query: String) {
         _searchQuery.value = query
+        savedStateHandle[KEY_QUERY] = query
     }
 
     fun playTrack(track: Track, contextQueue: List<Track>? = null) {
@@ -408,7 +457,7 @@ class LibraryViewModel(
         viewModelScope.launch {
             val tracks = trackRepository.getTracksForAlbum(album.albumId)
             if (tracks.isNotEmpty()) {
-                val queue = if (shuffle) tracks.shuffled() else tracks
+                val queue = if (shuffle) LibraryPolicy.shuffled(tracks, shuffleSeed()) else tracks
                 playbackFacade.playQueue(queue, startIndex = 0)
             }
         }
@@ -425,12 +474,13 @@ class LibraryViewModel(
 
     fun setTrackSortOrder(order: TrackSortOrder) {
         _trackSortOrder.value = order
+        savedStateHandle[KEY_SORT] = order.name
     }
 
     fun playLikedSongs(shuffle: Boolean = false) {
         val favs = uiState.value.favoriteTracks
         if (favs.isNotEmpty()) {
-            val queue = if (shuffle) favs.shuffled() else favs
+            val queue = if (shuffle) LibraryPolicy.shuffled(favs, shuffleSeed()) else favs
             playbackFacade.playQueue(queue, startIndex = 0)
         }
     }
@@ -438,7 +488,7 @@ class LibraryViewModel(
     fun playRecentlyPlayed(shuffle: Boolean = false) {
         val tracks = uiState.value.recentTracks
         if (tracks.isNotEmpty()) {
-            val queue = if (shuffle) tracks.shuffled() else tracks
+            val queue = if (shuffle) LibraryPolicy.shuffled(tracks, shuffleSeed()) else tracks
             playbackFacade.playQueue(queue, startIndex = 0)
         }
     }
@@ -446,7 +496,7 @@ class LibraryViewModel(
     fun playRecentlyAdded(shuffle: Boolean = false) {
         val tracks = uiState.value.recentlyAddedTracks
         if (tracks.isNotEmpty()) {
-            val queue = if (shuffle) tracks.shuffled() else tracks
+            val queue = if (shuffle) LibraryPolicy.shuffled(tracks, shuffleSeed()) else tracks
             playbackFacade.playQueue(queue, startIndex = 0)
         }
     }
@@ -469,7 +519,7 @@ class LibraryViewModel(
 
     // ==================== Playlist Actions (M5-D1 - M5-D5) ====================
 
-    fun selectPlaylist(playlist: com.kaon.music.core.data.model.Playlist?) {
+    fun selectPlaylist(playlist: Playlist?) {
         _selectedPlaylist.value = playlist
     }
 
@@ -537,11 +587,11 @@ class LibraryViewModel(
         }
     }
 
-    fun playPlaylist(playlist: com.kaon.music.core.data.model.Playlist, shuffle: Boolean = false, startIndex: Int = 0) {
+    fun playPlaylist(playlist: Playlist, shuffle: Boolean = false, startIndex: Int = 0) {
         viewModelScope.launch {
             val tracks = playlistRepository.getTracksForPlaylist(playlist.id)
             if (tracks.isNotEmpty()) {
-                val queue = if (shuffle) tracks.shuffled() else tracks
+                val queue = if (shuffle) LibraryPolicy.shuffled(tracks, shuffleSeed()) else tracks
                 val start = if (shuffle) 0 else startIndex.coerceIn(0, queue.size - 1)
                 playbackFacade.playQueue(queue, startIndex = start)
             }
@@ -550,5 +600,15 @@ class LibraryViewModel(
 
     fun dismissUserMessage() {
         _userMessage.value = null
+    }
+
+    /** Fresh seed per user-initiated shuffle; never used inside a flow transform. */
+    private fun shuffleSeed(): Long = System.currentTimeMillis()
+
+    private companion object {
+        const val KEY_FILTER = "library.filter"
+        const val KEY_SORT = "library.sortOrder"
+        const val KEY_LIKED = "library.likedSelected"
+        const val KEY_QUERY = "library.query"
     }
 }

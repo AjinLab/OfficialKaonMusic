@@ -22,6 +22,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -31,6 +32,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.kaon.music.core.artwork.SizeBucket
 import com.kaon.music.core.data.model.Track
 import com.kaon.music.core.designsystem.component.ArtworkImage
@@ -40,12 +42,22 @@ import com.kaon.music.core.designsystem.theme.KaonPrimary
 import com.kaon.music.core.designsystem.theme.KaonSurfaceElevated
 import com.kaon.music.core.designsystem.theme.KaonTextPrimary
 import com.kaon.music.core.designsystem.theme.KaonTextSecondary
+import com.kaon.music.core.designsystem.theme.LocalUserSettings
+import com.kaon.music.core.playback.model.PlaybackProgress
+import kotlinx.coroutines.flow.StateFlow
 
+/**
+ * Docked mini player.
+ *
+ * ARCHITECTURE.md §3.2: [progress] is passed as a flow rather than a float so the 500 ms tick is
+ * collected inside [MiniPlayerProgressBar] only. Passing the value in caused this entire composable —
+ * artwork, text, badges, icon buttons — to recompose twice per second.
+ */
 @Composable
 fun MiniPlayer(
     track: Track,
     isPlaying: Boolean,
-    progressFraction: Float,
+    progress: StateFlow<PlaybackProgress>,
     isFavorite: Boolean,
     onPlayPauseClick: () -> Unit,
     onFavoriteClick: () -> Unit,
@@ -95,7 +107,7 @@ fun MiniPlayer(
                             overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.weight(1f, fill = false)
                         )
-                        val userSettings = com.kaon.music.core.designsystem.theme.LocalUserSettings.current
+                        val userSettings = LocalUserSettings.current
                         if (track.source != "YOUTUBE" && userSettings.showFormatBadges) {
                             val isLosslessHighlight = track.isLossless && userSettings.showLosslessBadges
                             Spacer(modifier = Modifier.width(6.dp))
@@ -144,14 +156,24 @@ fun MiniPlayer(
                 }
             }
 
-            LinearProgressIndicator(
-                progress = { progressFraction.coerceIn(0f, 1f) },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(2.dp),
-                color = KaonPrimary,
-                trackColor = Color.Transparent
-            )
+            MiniPlayerProgressBar(progress = progress)
         }
     }
+}
+
+/**
+ * The only composable in the mini player that observes playback position, so a tick invalidates a
+ * 2 dp progress bar rather than the whole row.
+ */
+@Composable
+private fun MiniPlayerProgressBar(progress: StateFlow<PlaybackProgress>) {
+    val playbackProgress by progress.collectAsStateWithLifecycle()
+    LinearProgressIndicator(
+        progress = { playbackProgress.fraction },
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(2.dp),
+        color = KaonPrimary,
+        trackColor = Color.Transparent
+    )
 }

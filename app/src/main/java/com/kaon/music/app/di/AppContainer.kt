@@ -5,19 +5,37 @@ import com.kaon.music.core.artwork.ArtworkResolver
 import com.kaon.music.core.data.db.KaonDatabase
 import com.kaon.music.core.data.online.YouTubeSessionManager
 import com.kaon.music.core.data.repository.HistoryRepository
+import com.kaon.music.core.data.repository.MetadataRepository
+import com.kaon.music.core.data.repository.MetadataRepositoryImpl
+import com.kaon.music.core.data.repository.PlaylistRepository
+import com.kaon.music.core.data.repository.SettingsRepository
 import com.kaon.music.core.data.repository.TrackRepository
 import com.kaon.music.core.data.sync.MediaStoreScanner
 import com.kaon.music.core.data.sync.SyncEngine
+import com.kaon.music.core.network.NetworkConnectivityMonitor
+import com.kaon.music.core.network.NetworkMonitor
 import com.kaon.music.core.playback.PlaybackFacade
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 
 /**
- * Clean Application Container managing singleton dependencies.
+ * Application dependency container.
  *
- * Implements ARCHITECTURE_ATTRIBUTED.md §1.3 & §16:
- * - Direct constructor injection avoiding speculative framework overhead.
- * - Centralizes database, sync engine, repositories, and the process-scoped PlaybackFacade.
+ * ARCHITECTURE.md §4: manual constructor injection. 11 singletons; revisit a DI framework at ~15.
+ * Every process-scoped collaborator is obtained from here — no component constructs its own copy of
+ * a shared dependency (that produced four independent SettingsRepository instances reading the same
+ * DataStore file).
  */
 class AppContainer(private val context: Context) {
+
+    /**
+     * The single application-lifetime coroutine scope (ARCHITECTURE.md §5.4).
+     *
+     * Fire-and-forget work that must outlive any screen or the playback service belongs here rather
+     * than in a scope owned by an `object`, which can never be cancelled or observed.
+     */
+    val appScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     val youtubeSessionManager: YouTubeSessionManager by lazy {
         YouTubeSessionManager(context)
@@ -54,8 +72,8 @@ class AppContainer(private val context: Context) {
         )
     }
 
-    val playlistRepository: com.kaon.music.core.data.repository.PlaylistRepository by lazy {
-        com.kaon.music.core.data.repository.PlaylistRepository(
+    val playlistRepository: PlaylistRepository by lazy {
+        PlaylistRepository(
             playlistDao = database.playlistDao(),
             trackDao = database.trackDao(),
             favoriteDao = database.favoriteDao()
@@ -66,20 +84,23 @@ class AppContainer(private val context: Context) {
         ArtworkResolver(context, metadataRepository)
     }
 
-    val settingsRepository: com.kaon.music.core.data.repository.SettingsRepository by lazy {
-        com.kaon.music.core.data.repository.SettingsRepository(context)
+    val settingsRepository: SettingsRepository by lazy {
+        SettingsRepository(context)
     }
 
-    val metadataRepository: com.kaon.music.core.data.repository.MetadataRepository by lazy {
-        com.kaon.music.core.data.repository.MetadataRepositoryImpl(
-            settingsRepository = settingsRepository
-        )
+    val metadataRepository: MetadataRepository by lazy {
+        MetadataRepositoryImpl(settingsRepository = settingsRepository)
+    }
+
+    val networkMonitor: NetworkMonitor by lazy {
+        NetworkConnectivityMonitor(context)
     }
 
     val playbackFacade: PlaybackFacade by lazy {
         PlaybackFacade(
             context = context,
-            trackRepository = trackRepository
+            trackRepository = trackRepository,
+            settingsRepository = settingsRepository
         )
     }
 }

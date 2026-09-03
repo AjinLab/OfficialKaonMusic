@@ -16,7 +16,8 @@ import com.kaon.music.core.data.repository.TrackRepository
 import com.kaon.music.core.data.sync.MediaStoreScanner
 import com.kaon.music.core.data.sync.SyncEngine
 import com.kaon.music.core.playback.PlaybackFacade
-import com.kaon.music.core.playback.model.PlaybackState
+import com.kaon.music.core.playback.model.NowPlaying
+import com.kaon.music.core.playback.model.PlaybackQueue
 import com.kaon.music.feature.library.MainDispatcherRule
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
@@ -296,13 +297,11 @@ class PlayerViewModelTest {
     @Test
     fun saveQueueAsPlaylist_createsPlaylist_andInsertsAllQueueTracks() = runTest {
         // Given an active queue with 2 tracks
-        playbackFacade.updatePlaybackStateForTesting(
-            PlaybackState(
-                queue = listOf(domainTrack1, domainTrack2),
-                currentIndex = 0,
-                currentTrack = domainTrack1,
-                isPlaying = true
-            )
+        playbackFacade.updateQueueForTesting(
+            PlaybackQueue(tracks = listOf(domainTrack1, domainTrack2), currentIndex = 0)
+        )
+        playbackFacade.updateNowPlayingForTesting(
+            NowPlaying(currentTrack = domainTrack1, currentIndex = 0, isPlaying = true)
         )
 
         var isCompleted = false
@@ -394,20 +393,18 @@ class PlayerViewModelTest {
             playlistRepository = playlistRepository
         )
 
-        playbackFacade.updatePlaybackStateForTesting(
-            PlaybackState(
-                queue = listOf(domainTrack1),
-                currentIndex = 0,
-                currentTrack = domainTrack1,
-                isPlaying = true
-            )
+        playbackFacade.updateQueueForTesting(
+            PlaybackQueue(tracks = listOf(domainTrack1), currentIndex = 0)
+        )
+        playbackFacade.updateNowPlayingForTesting(
+            NowPlaying(currentTrack = domainTrack1, currentIndex = 0, isPlaying = true)
         )
         advanceUntilIdle()
 
         vm.expandFullPlayer()
         assertTrue(vm.isFullPlayerExpanded.value)
 
-        playbackFacade.updatePlaybackStateForTesting(PlaybackState())
+        playbackFacade.updateNowPlayingForTesting(NowPlaying())
         advanceUntilIdle()
 
         assertFalse(vm.isFullPlayerExpanded.value)
