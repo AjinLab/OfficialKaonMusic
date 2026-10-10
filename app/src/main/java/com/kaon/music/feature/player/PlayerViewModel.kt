@@ -97,6 +97,12 @@ class PlayerViewModel(
                     }
                 }
         }
+
+        viewModelScope.launch {
+            playerController.expandPlayerRequests.collect {
+                expandFullPlayer()
+            }
+        }
     }
 
     fun fetchLyricsAndMetadata(track: Track) {

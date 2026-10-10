@@ -28,6 +28,8 @@ class ArchitectureBoundaryTest {
         "android.database.Cursor",
         "com.landofoz.musicmeta",
         "com.kaon.music.core.playback.PlaybackFacade",
+        "com.kaon.music.core.playback.KaonPlaybackService",
+        "com.kaon.music.core.playback.YouTubeStreamResolver",
         "com.kaon.music.core.data.repository."
     )
 
@@ -74,6 +76,17 @@ class ArchitectureBoundaryTest {
                 "com.kaon.music.core.data.db",
                 "com.kaon.music.core.playback"
             )
+        ),
+        Rule(
+            description = "MainActivity must remain a thin host and not import feature/* (ARCHITECTURE.md §3)",
+            packagePath = "app",
+            forbiddenSubstrings = listOf("com.kaon.music.feature."),
+            allowedFiles = setOf("KaonViewModelFactory.kt")
+        ),
+        Rule(
+            description = "ui/* plugins must only interact through controllers and models, never reaching Room, Media3, or repositories",
+            packagePath = "ui",
+            forbiddenSubstrings = roomAndPlatformInternals
         )
     )
 

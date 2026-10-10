@@ -227,5 +227,9 @@ class SettingsRepository(private val context: Context) : SettingsController {
         setFanartTvApiKey(fanartTvKey)
         setDiscogsToken(discogsToken)
     }
+
+    override suspend fun clearStreamCache() {
+        com.kaon.music.core.playback.YouTubeStreamResolver.clearCache()
+    }
 }
 

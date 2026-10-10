@@ -107,7 +107,6 @@ class KernelTest {
 
             override fun initialize(kernel: KaonKernel) {
                 executionLog.add("plugin_initialize")
-                // Verify service is available during plugin init
                 val svc = kernel.services.get<TestService>()
                 svc.greet()
             }
@@ -128,6 +127,7 @@ class KernelTest {
             listOf("plugin_initialize", "service_greet", "plugin_start"),
             executionLog
         )
+        assertEquals(PluginState.ACTIVE, kernel.plugins.stateOf("order.plugin"))
 
         kernel.shutdown()
         assertFalse(kernel.isInitialized)
@@ -138,20 +138,118 @@ class KernelTest {
     }
 
     @Test
-    fun kernelFailsFastOnPluginInitError() {
-        val kernel = KaonKernel()
+    fun onePluginFailingIsIsolatedAndOthersStillActivate() {
+        val loggedErrors = mutableListOf<String>()
+        val testLogger = KernelLogger { level, msg, _ ->
+            if (level == KernelLogLevel.ERROR) loggedErrors.add(msg)
+        }
+
+        val kernel = KaonKernel(logger = testLogger)
+
         val failingPlugin = object : KaonPlugin {
             override val metadata = PluginMetadata(id = "broken.plugin", name = "Broken Plugin")
             override fun initialize(kernel: KaonKernel) {
-                error("Simulated plugin crash during init")
+                error("Plugin crashed on init")
+            }
+        }
+
+        val healthyPlugin = object : KaonPlugin {
+            override val metadata = PluginMetadata(id = "healthy.plugin", name = "Healthy Plugin")
+            var started = false
+            override fun start() {
+                started = true
+            }
+        }
+
+        kernel.bootstrap(listOf({ failingPlugin }, { healthyPlugin }))
+
+        assertTrue(kernel.isInitialized)
+        assertEquals(PluginState.FAILED, kernel.plugins.stateOf("broken.plugin"))
+        assertEquals("Plugin crashed on init", kernel.plugins.failureOf("broken.plugin")?.message)
+        assertEquals(PluginState.ACTIVE, kernel.plugins.stateOf("healthy.plugin"))
+        assertEquals(1, loggedErrors.size)
+        assertTrue(loggedErrors[0].contains("broken.plugin"))
+    }
+
+    @Test
+    fun pluginCanBeRegisteredAndInitializedWithoutBecomingActive() {
+        val registry = PluginRegistry()
+        val kernel = KaonKernel(plugins = registry)
+        val loader = PluginLoader()
+
+        val alternatePlugin = object : KaonPlugin {
+            override val metadata = PluginMetadata(id = "alt.ui", name = "Alternate UI")
+            var initialized = false
+            var started = false
+
+            override fun initialize(kernel: KaonKernel) {
+                initialized = true
+            }
+
+            override fun start() {
+                started = true
+            }
+        }
+
+        loader.registerAll(registry, listOf(alternatePlugin))
+        assertEquals(PluginState.REGISTERED, registry.stateOf("alt.ui"))
+
+        loader.initializeAll(registry, kernel)
+        assertEquals(PluginState.INITIALIZED, registry.stateOf("alt.ui"))
+        assertTrue(alternatePlugin.initialized)
+        assertFalse(alternatePlugin.started)
+
+        // Does not activate until explicitly requested
+        assertEquals(0, registry.activePlugins().size)
+        loader.activate("alt.ui", registry, kernel)
+        assertEquals(PluginState.ACTIVE, registry.stateOf("alt.ui"))
+        assertTrue(alternatePlugin.started)
+    }
+
+    @Test
+    fun designatedUiPluginFailureThrowsFast() {
+        val kernel = KaonKernel()
+        val failingUi = object : UiPlugin {
+            override val metadata = PluginMetadata(id = "ui.primary", name = "Primary UI")
+            override fun start() {
+                error("Primary UI failed to start")
             }
         }
 
         try {
-            kernel.bootstrap(listOf { failingPlugin })
-            fail("Expected IllegalStateException from plugin init")
-        } catch (e: IllegalStateException) {
-            assertEquals("Simulated plugin crash during init", e.message)
+            kernel.bootstrap(
+                pluginSuppliers = listOf { failingUi },
+                activeUiPluginId = "ui.primary"
+            )
+            fail("Expected UiPluginActivationException")
+        } catch (e: UiPluginActivationException) {
+            assertEquals("ui.primary", e.id)
+            assertEquals("Primary UI failed to start", e.cause?.message)
         }
+    }
+
+    @Test
+    fun shutdownLogsPluginErrorsRatherThanSwallowingSilently() {
+        val errorLogs = mutableListOf<String>()
+        val testLogger = KernelLogger { level, msg, _ ->
+            if (level == KernelLogLevel.ERROR) errorLogs.add(msg)
+        }
+
+        val kernel = KaonKernel(logger = testLogger)
+        val crashingOnStopPlugin = object : KaonPlugin {
+            override val metadata = PluginMetadata(id = "crash.stop", name = "Crash On Stop")
+            override fun stop() {
+                throw RuntimeException("Explosion on stop")
+            }
+        }
+
+        kernel.bootstrap(listOf { crashingOnStopPlugin })
+        assertEquals(PluginState.ACTIVE, kernel.plugins.stateOf("crash.stop"))
+
+        kernel.shutdown()
+
+        assertEquals(1, errorLogs.size)
+        assertTrue(errorLogs[0].contains("crash.stop"))
+        assertTrue(errorLogs[0].contains("Explosion on stop"))
     }
 }

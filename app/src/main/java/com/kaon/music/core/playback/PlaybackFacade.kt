@@ -95,6 +95,13 @@ class PlaybackFacade(
     private val _oneShotEvents = MutableSharedFlow<PlaybackEvent>(extraBufferCapacity = 1)
     override val oneShotEvents: SharedFlow<PlaybackEvent> = _oneShotEvents.asSharedFlow()
 
+    private val _expandPlayerRequests = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    override val expandPlayerRequests: SharedFlow<Unit> = _expandPlayerRequests.asSharedFlow()
+
+    override fun requestExpandPlayer() {
+        _expandPlayerRequests.tryEmit(Unit)
+    }
+
     private var controllerFuture: ListenableFuture<MediaController>? = null
     private var mediaController: MediaController? = null
     private var playerListener: Player.Listener? = null

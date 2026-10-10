@@ -39,7 +39,16 @@ import kotlinx.coroutines.SupervisorJob
 class AppContainer(private val context: Context) {
 
     /** Central microkernel coordinating service registration and build-time plugins. */
-    val kernel: KaonKernel = KaonKernel()
+    val kernel: KaonKernel = KaonKernel(
+        logger = { level, message, throwable ->
+            when (level) {
+                com.kaon.music.core.kernel.KernelLogLevel.DEBUG -> timber.log.Timber.tag("KaonKernel").d(throwable, message)
+                com.kaon.music.core.kernel.KernelLogLevel.INFO -> timber.log.Timber.tag("KaonKernel").i(throwable, message)
+                com.kaon.music.core.kernel.KernelLogLevel.WARN -> timber.log.Timber.tag("KaonKernel").w(throwable, message)
+                com.kaon.music.core.kernel.KernelLogLevel.ERROR -> timber.log.Timber.tag("KaonKernel").e(throwable, message)
+            }
+        }
+    )
 
     /**
      * The single application-lifetime coroutine scope (ARCHITECTURE.md §5.4).
@@ -160,10 +169,11 @@ class AppContainer(private val context: Context) {
 
         // 2. Build-time compile plugins bootstrap
         kernel.bootstrap(
-            listOf(
+            pluginSuppliers = listOf(
                 { DefaultUiPlugin() },
                 { MinimalUiPlugin() }
-            )
+            ),
+            activeUiPluginId = activeUiPluginId
         )
     }
 }

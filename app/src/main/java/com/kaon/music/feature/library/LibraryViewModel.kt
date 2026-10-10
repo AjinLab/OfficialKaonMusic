@@ -111,7 +111,7 @@ class LibraryViewModel(
             ?: TrackSortOrder.TITLE_ASC
     )
     private val _isSyncing = MutableStateFlow(false)
-    private val _hasPermission = MutableStateFlow(true)
+    private val _hasPermission = libraryController.hasPermission
     private val _searchQuery = MutableStateFlow(savedStateHandle.get<String>(KEY_QUERY) ?: "")
 
     private val _selectedAlbum = MutableStateFlow<Album?>(null)
@@ -389,7 +389,7 @@ class LibraryViewModel(
     }
 
     fun setPermissionState(granted: Boolean) {
-        _hasPermission.value = granted
+        libraryController.setPermissionState(granted)
         if (granted) {
             triggerSync()
         }

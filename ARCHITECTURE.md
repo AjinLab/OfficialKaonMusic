@@ -26,7 +26,7 @@ It is maintained by a single developer. Architecture decisions optimise for that
 | `:core:kernel` | pure Kotlin/JVM | `KaonKernel`, `ServiceRegistry`, `PluginRegistry`, `PluginLoader`, plugin contracts. **Zero Android imports.** |
 | `:app` | application | Application bootstrap, `MainActivity`, DI wiring, navigation, `core/*` + `feature/*` packages |
 | `:core:model` | pure Kotlin/JVM | domain types, capability controllers (`PlayerController`, `LibraryController`), quality policy, error model. (Zero Android imports) |
-| `:core:extraction` | android library | extraction adapter (`YouTubeStreamExtractor`), PoToken WebView, quality policy, redaction helpers |
+| `:core-extraction` | android library | extraction adapter (`YouTubeStreamExtractor`), PoToken WebView, quality policy, redaction helpers |
 | `:innertube` | android library | InnerTube models and page parsing — vendored from upstream Metrolist |
 | `:baselineprofile` | test | baseline profile + startup macrobenchmark |
 
@@ -37,7 +37,7 @@ minimal build overhead.
 Compile-time UI plugins (`DefaultUiPlugin`, `MinimalUiPlugin`) implement `UiPlugin` from `:core:kernel`,
 consume capability controllers (`PlayerController`, `LibraryController`), and are bootstrapped by `KaonKernel`.
 
-`:core:extraction` holds the extraction adapter (`YouTubeStreamExtractor`), the PoToken WebView, the quality policy,
+`:core-extraction` holds the extraction adapter (`YouTubeStreamExtractor`), the PoToken WebView, the quality policy,
 and the redaction helpers, and depends only on `:innertube` (+ okhttp/okio for the BotGuard challenge). It must never
 import `:app`, `core.data`, `core.playback`, or `feature/*` — enforced by `ExtractionModuleBoundaryTest`. The
 `StreamResolver` port itself lives in `core/playback` (§7), because a port belongs to its consumer; `KaonStreamResolver`
@@ -49,7 +49,7 @@ binds it to the validated object implementation without rewriting it.
 :baselineprofile ──▶ :app ──▶ :core:kernel
                        │   ──▶ :innertube ──▶ innertubex ──▶ quickjs-kt
                        │          ▲
-                       │          └──▶ :core:extraction
+                       │          └──▶ :core-extraction
                        └──▶ :core:model
 ```
 
@@ -470,7 +470,6 @@ Each phase leaves the repository buildable and shippable.
 | 3 | Library scale: `flowOn`, SQL search/sort, Paging 3, composite index | **done** |
 | 4 | Identity: `TrackId`/`MediaLocator`/`ProviderId`, schema v8, drop CASCADE, transactions | **done** |
 | 5 | Quality policy: `QualityTier`/`Purpose`/`QualityOutcome` over the extractor | **done** |
-| 5 | Quality policy: `QualityTier`/`Purpose`/`QualityOutcome` over the extractor | pending |
 | 6 | Navigation, error model, theme registry, UI structure | pending |
 | 7 | Downloads + offline | pending |
 
@@ -493,7 +492,7 @@ Feature prerequisites:
 | Item | Reason |
 | --- | --- |
 | Runtime dynamic code loading (DEX/APK) | security, Play policy, sandbox hazards. Compile-time UI plugins via `:core:kernel` are supported instead. |
-| Modules beyond `:core:kernel`, `:core:model`, `:core:extraction` | package discipline plus boundary tests suffice for internals |
+| Modules beyond `:core:kernel`, `:core:model`, `:core-extraction` | package discipline plus boundary tests suffice for internals |
 | Hilt/Dagger | `AppContainer` + `KaonKernel.services` holds singletons cleanly |
 | Room FTS | indexed `LIKE` with `LIMIT` exists and is not yet the bottleneck |
 | Hi-Res/Lossless UI options | dishonest before `QualityOutcome.Unsatisfiable` exists |

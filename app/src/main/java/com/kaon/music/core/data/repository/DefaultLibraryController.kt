@@ -26,6 +26,13 @@ class DefaultLibraryController(
     private val historyRepository: HistoryRepository? = null
 ) : LibraryController {
 
+    private val _hasPermission = kotlinx.coroutines.flow.MutableStateFlow(true)
+    override val hasPermission: kotlinx.coroutines.flow.StateFlow<Boolean> = _hasPermission
+
+    override fun setPermissionState(granted: Boolean) {
+        _hasPermission.value = granted
+    }
+
     override fun observeTrackCount(query: String): Flow<Int> =
         trackRepository.observeTrackCount(query)
 

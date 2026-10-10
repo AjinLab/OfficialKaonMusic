@@ -32,4 +32,5 @@ interface SettingsController {
     suspend fun setFanartTvApiKey(key: String)
     suspend fun setDiscogsToken(token: String)
     suspend fun setMetadataApiKeys(lastFmKey: String, fanartTvKey: String, discogsToken: String)
+    suspend fun clearStreamCache()
 }

@@ -19,7 +19,9 @@ interface PlayerController {
     val queue: StateFlow<PlaybackQueue>
     val progress: StateFlow<PlaybackProgress>
     val oneShotEvents: SharedFlow<PlaybackEvent>
+    val expandPlayerRequests: SharedFlow<Unit>
 
+    fun requestExpandPlayer()
     fun playTrack(track: Track, queue: List<Track>)
     fun playQueue(queue: List<Track>, startIndex: Int = 0)
     fun togglePlayPause()

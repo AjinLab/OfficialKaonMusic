@@ -9,30 +9,20 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.activity.viewModels
 import androidx.core.content.ContextCompat
-import com.kaon.music.app.di.KaonViewModelFactory
 import com.kaon.music.core.playback.KaonPlaybackService
-import com.kaon.music.feature.library.LibraryViewModel
-import com.kaon.music.feature.player.PlayerViewModel
 import com.kaon.music.ui.plugin.UiControllers
 
 /**
- * Minimal activity host delegating UI rendering to the active [com.kaon.music.ui.plugin.KaonUiPlugin].
+ * Truly minimal activity host delegating UI rendering to the active [com.kaon.music.ui.plugin.KaonUiPlugin].
  *
- * Implements the microkernel architecture pattern:
- * - Bootstraps and acquires the active UI plugin from the kernel/container
- * - Enforces compile-time plugin model with zero runtime reflection
- * - Handles notification intent routing and Android runtime permissions
+ * Implements the thin host architecture pattern (ARCHITECTURE.md §3):
+ * - Bootstraps and acquires the active UI plugin from the kernel
+ * - Completely decoupled from presentation ViewModels and feature code (zero feature.* imports)
+ * - Passes capability controllers into the active UI plugin
+ * - Routes platform notification intents and runtime permissions directly through capability controllers
  */
 class MainActivity : ComponentActivity() {
-
-    private val viewModelFactory by lazy {
-        KaonViewModelFactory((application as KaonApplication).container, this)
-    }
-
-    private val libraryViewModel: LibraryViewModel by viewModels { viewModelFactory }
-    private val playerViewModel: PlayerViewModel by viewModels { viewModelFactory }
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -43,7 +33,8 @@ class MainActivity : ComponentActivity() {
             permissions[Manifest.permission.READ_EXTERNAL_STORAGE] == true
         }
 
-        libraryViewModel.setPermissionState(audioGranted)
+        val container = (application as KaonApplication).container
+        container.libraryController.setPermissionState(audioGranted)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -78,7 +69,8 @@ class MainActivity : ComponentActivity() {
 
     private fun handleNotificationIntent(intent: Intent?) {
         if (intent?.getBooleanExtra(KaonPlaybackService.EXTRA_EXPAND_PLAYER, false) == true) {
-            playerViewModel.expandFullPlayer()
+            val container = (application as KaonApplication).container
+            container.playerController.requestExpandPlayer()
         }
     }
 
@@ -110,7 +102,8 @@ class MainActivity : ComponentActivity() {
         if (permissions.isNotEmpty()) {
             permissionLauncher.launch(permissions.toTypedArray())
         } else {
-            libraryViewModel.setPermissionState(hasStoragePermission())
+            val container = (application as KaonApplication).container
+            container.libraryController.setPermissionState(true)
         }
     }
 }

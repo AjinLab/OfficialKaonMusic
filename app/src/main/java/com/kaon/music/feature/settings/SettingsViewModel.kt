@@ -11,7 +11,6 @@ import com.kaon.music.core.model.UserMessageBus
 import com.kaon.music.core.model.UserSettings
 import com.kaon.music.core.extraction.model.AudioQuality
 import com.kaon.music.core.extraction.model.AudioType
-import com.kaon.music.core.playback.YouTubeStreamResolver
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -189,7 +188,7 @@ class SettingsViewModel(
     fun clearStreamCache() {
         viewModelScope.launch {
             try {
-                YouTubeStreamResolver.clearCache()
+                settingsController.clearStreamCache()
                 userMessageBus?.post("Stream resolver cache cleared")
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e

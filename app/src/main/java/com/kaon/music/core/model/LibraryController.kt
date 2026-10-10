@@ -19,6 +19,9 @@ typealias SyncResult = com.kaon.music.core.data.sync.SyncResult
  * Keeps UI completely insulated from Room entities, DAOs, or raw repositories.
  */
 interface LibraryController {
+    val hasPermission: kotlinx.coroutines.flow.StateFlow<Boolean>
+    fun setPermissionState(granted: Boolean)
+
     fun observeTrackCount(query: String = ""): Flow<Int>
     fun observeFavoriteCount(query: String = ""): Flow<Int>
     fun observeSyncState(): Flow<Boolean>
