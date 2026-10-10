@@ -16,7 +16,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -54,11 +54,13 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.paging.compose.LazyPagingItems
 import com.kaon.music.core.data.model.Playlist
 import com.kaon.music.core.data.model.Track
 import com.kaon.music.core.designsystem.component.EmptyStateView
 import com.kaon.music.core.designsystem.component.formatDuration
 import com.kaon.music.core.designsystem.theme.KaonBackground
+import com.kaon.music.core.designsystem.theme.PlaylistHeaderBrush
 import com.kaon.music.core.designsystem.theme.KaonPrimary
 import com.kaon.music.core.designsystem.theme.KaonTextPrimary
 import com.kaon.music.core.designsystem.theme.KaonTextSecondary
@@ -67,18 +69,20 @@ import com.kaon.music.core.designsystem.theme.KaonTextTertiary
 @Composable
 fun PlaylistDetailScreen(
     playlist: Playlist,
-    tracks: List<Track>,
+    tracks: LazyPagingItems<Track>,
+    trackCount: Int,
+    totalDurationMs: Long,
     activeTrackId: Long?,
     isPlaying: Boolean,
     onBack: () -> Unit,
     onTrackClick: (Track, Int) -> Unit,
     onPlayAll: () -> Unit,
     onShuffleAll: () -> Unit,
-    onFavoriteToggle: (Long) -> Unit,
+    onFavoriteToggle: (Track) -> Unit,
     onPlayNext: (Track) -> Unit,
     onAddToQueue: (Track) -> Unit,
     onRemoveFromPlaylist: (Long) -> Unit,
-    onReorder: (List<Long>) -> Unit,
+    onMoveTrack: (Long, Int) -> Unit,
     onRenamePlaylist: (String) -> Unit,
     onDeletePlaylist: () -> Unit,
     onAddToPlaylist: (Track) -> Unit,
@@ -90,8 +94,6 @@ fun PlaylistDetailScreen(
     var showMenu by remember { mutableStateOf(false) }
     var showRenameDialog by remember { mutableStateOf(false) }
     var showDeleteDialog by remember { mutableStateOf(false) }
-
-    val totalDurationMs = remember(tracks) { tracks.sumOf { it.durationMs } }
 
     Column(
         modifier = modifier
@@ -170,11 +172,7 @@ fun PlaylistDetailScreen(
                         modifier = Modifier
                             .size(160.dp)
                             .clip(RoundedCornerShape(16.dp))
-                            .background(
-                                Brush.linearGradient(
-                                    listOf(Color(0xFF3B82F6), Color(0xFF8B5CF6), Color(0xFFEC4899))
-                                )
-                            ),
+                            .background(PlaylistHeaderBrush),
                         contentAlignment = Alignment.Center
                     ) {
                         Icon(
@@ -197,7 +195,7 @@ fun PlaylistDetailScreen(
                     Spacer(modifier = Modifier.height(4.dp))
 
                     val infoText = buildString {
-                        append("${tracks.size} ${if (tracks.size == 1) "track" else "tracks"}")
+                        append("$trackCount ${if (trackCount == 1) "track" else "tracks"}")
                         if (totalDurationMs > 0) {
                             append(" • ${formatDuration(totalDurationMs)}")
                         }
@@ -208,7 +206,7 @@ fun PlaylistDetailScreen(
                         color = KaonTextSecondary
                     )
 
-                    if (tracks.isNotEmpty()) {
+                    if (trackCount > 0) {
                         Spacer(modifier = Modifier.height(20.dp))
 
                         Row(
@@ -248,7 +246,7 @@ fun PlaylistDetailScreen(
             }
 
             // Track Items or Empty State
-            if (tracks.isEmpty()) {
+            if (trackCount == 0) {
                 item {
                     EmptyStateView(
                         icon = Icons.AutoMirrored.Filled.QueueMusic,
@@ -259,41 +257,31 @@ fun PlaylistDetailScreen(
                     )
                 }
             } else {
-                itemsIndexed(
-                    items = tracks,
-                    key = { index, track -> "pl_${playlist.id}_${track.id}_$index" }
-                ) { index, track ->
+                // Keyed by track id alone. The previous key included the index, so a reorder or an
+                // insert re-keyed every row after it and forced the whole tail to recompose.
+                items(
+                    count = tracks.itemCount,
+                    key = { index -> tracks.peek(index)?.let { "pl_${playlist.id}_${it.stableKey}" } ?: "pl_placeholder_$index" }
+                ) { index ->
+                    val track = tracks[index] ?: return@items
                     PlaylistTrackRow(
                         track = track,
                         position = index + 1,
                         isPlaying = isPlaying,
-                        isCurrent = track.id == activeTrackId,
+                        isCurrent = track.id.value == activeTrackId,
                         canMoveUp = index > 0,
-                        canMoveDown = index < tracks.size - 1,
+                        canMoveDown = index < trackCount - 1,
                         onClick = { onTrackClick(track, index) },
-                        onFavoriteToggle = { onFavoriteToggle(track.id) },
+                        onFavoriteToggle = { onFavoriteToggle(track) },
                         onPlayNext = { onPlayNext(track) },
                         onAddToQueue = { onAddToQueue(track) },
-                        onRemoveFromPlaylist = { onRemoveFromPlaylist(track.id) },
+                        onRemoveFromPlaylist = { onRemoveFromPlaylist(track.id.value) },
                         onAddToPlaylist = { onAddToPlaylist(track) },
-                        onMoveUp = {
-                            if (index > 0) {
-                                val mutable = tracks.map { it.id }.toMutableList()
-                                val temp = mutable[index]
-                                mutable[index] = mutable[index - 1]
-                                mutable[index - 1] = temp
-                                onReorder(mutable)
-                            }
-                        },
-                        onMoveDown = {
-                            if (index < tracks.size - 1) {
-                                val mutable = tracks.map { it.id }.toMutableList()
-                                val temp = mutable[index]
-                                mutable[index] = mutable[index + 1]
-                                mutable[index + 1] = temp
-                                onReorder(mutable)
-                            }
-                        }
+                        // Move by delta: the ViewModel reads the authoritative order from the
+                        // database, so a move works at a page boundary where the loaded window does
+                        // not contain the neighbour.
+                        onMoveUp = { onMoveTrack(track.id.value, -1) },
+                        onMoveDown = { onMoveTrack(track.id.value, +1) }
                     )
                 }
             }

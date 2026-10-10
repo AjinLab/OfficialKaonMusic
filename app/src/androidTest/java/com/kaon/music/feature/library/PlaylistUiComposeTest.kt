@@ -7,9 +7,16 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.runtime.Composable
 import androidx.compose.ui.unit.dp
+import androidx.paging.PagingData
+import androidx.paging.compose.LazyPagingItems
+import androidx.paging.compose.collectAsLazyPagingItems
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.kaon.music.core.data.model.AudioSpec
+import com.kaon.music.core.data.model.MediaLocator
 import com.kaon.music.core.data.model.Playlist
+import com.kaon.music.core.data.model.TrackId
 import com.kaon.music.core.data.model.Track
 import com.kaon.music.core.designsystem.theme.KaonTheme
 import com.kaon.music.feature.library.playlist.AddToPlaylistBottomSheet
@@ -26,33 +33,38 @@ class PlaylistUiComposeTest {
     @get:Rule
     val composeTestRule = createComposeRule()
 
+    /**
+     * Presents a fixed list as [LazyPagingItems].
+     *
+     * The playlist detail list is paged now, so the screen takes a presenter rather than a list; a
+     * single-emission `PagingData` flow is the smallest way to keep these UI assertions about layout
+     * rather than about paging.
+     */
+    @Composable
+    private fun pagingItemsOf(tracks: List<Track>): LazyPagingItems<Track> =
+        kotlinx.coroutines.flow.flowOf(PagingData.from(tracks)).collectAsLazyPagingItems()
+
     private val sampleTrack1 = Track(
-        id = 1L,
-        mediaStoreId = 101L,
+        id = TrackId(1L),
         title = "Bohemian Rhapsody",
         artist = "Queen",
         album = "A Night at the Opera",
         albumId = 10L,
-        durationMs = 354000L,
-        sizeBytes = 8000000L,
-        dateModified = 1000L,
-        dateAdded = 1000L,
-        isMissing = false,
+        durationMs = 354_000L,
+        locator = MediaLocator.LocalFile(mediaStoreId = 101L, relativePath = "Music/bohemian.mp3"),
+        audio = AudioSpec(mimeType = "audio/mpeg", sizeBytes = 8_000_000L),
         isFavorite = false
     )
 
     private val sampleTrack2 = Track(
-        id = 2L,
-        mediaStoreId = 102L,
+        id = TrackId(2L),
         title = "Under Pressure",
         artist = "Queen",
         album = "Hot Space",
         albumId = 20L,
-        durationMs = 248000L,
-        sizeBytes = 6000000L,
-        dateModified = 1000L,
-        dateAdded = 1000L,
-        isMissing = false,
+        durationMs = 248_000L,
+        locator = MediaLocator.LocalFile(mediaStoreId = 102L, relativePath = "Music/pressure.mp3"),
+        audio = AudioSpec(mimeType = "audio/mpeg", sizeBytes = 6_000_000L),
         isFavorite = true
     )
 
@@ -73,7 +85,9 @@ class PlaylistUiComposeTest {
             KaonTheme {
                 PlaylistDetailScreen(
                     playlist = samplePlaylist,
-                    tracks = listOf(sampleTrack1, sampleTrack2),
+                    tracks = pagingItemsOf(listOf(sampleTrack1, sampleTrack2)),
+                    trackCount = 2,
+                    totalDurationMs = sampleTrack1.durationMs + sampleTrack2.durationMs,
                     activeTrackId = 1L,
                     isPlaying = true,
                     onBack = {},
@@ -84,7 +98,7 @@ class PlaylistUiComposeTest {
                     onPlayNext = {},
                     onAddToQueue = {},
                     onRemoveFromPlaylist = {},
-                    onReorder = {},
+                    onMoveTrack = { _, _ -> },
                     onRenamePlaylist = {},
                     onDeletePlaylist = {},
                     onAddToPlaylist = {},
@@ -146,7 +160,9 @@ class PlaylistUiComposeTest {
             KaonTheme {
                 PlaylistDetailScreen(
                     playlist = emptyPlaylist,
-                    tracks = emptyList(),
+                    tracks = pagingItemsOf(emptyList()),
+                    trackCount = 0,
+                    totalDurationMs = 0L,
                     activeTrackId = null,
                     isPlaying = false,
                     onBack = {},
@@ -157,7 +173,7 @@ class PlaylistUiComposeTest {
                     onPlayNext = {},
                     onAddToQueue = {},
                     onRemoveFromPlaylist = {},
-                    onReorder = {},
+                    onMoveTrack = { _, _ -> },
                     onRenamePlaylist = {},
                     onDeletePlaylist = {},
                     onAddToPlaylist = {},

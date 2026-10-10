@@ -17,17 +17,9 @@ import org.junit.Test
  */
 class LibraryPolicyTest {
 
-    private fun track(id: Long, title: String = "Track $id") = Track(
+    private fun track(id: Long, title: String = "Track $id") = com.kaon.music.core.data.model.localTrack(
         id = id,
-        mediaStoreId = id,
-        title = title,
-        artist = "Artist",
-        album = "Album",
-        albumId = 1L,
-        durationMs = 180_000L,
-        sizeBytes = 1_000L,
-        dateModified = 0L,
-        contentUri = null as Uri?
+        title = title
     )
 
     private val library = (1L..20L).map { track(it) }
@@ -37,7 +29,7 @@ class LibraryPolicyTest {
         val first = LibraryPolicy.buildYourMix(mostPlayed = library, allTracks = emptyList(), seed = 42L)
         val second = LibraryPolicy.buildYourMix(mostPlayed = library, allTracks = emptyList(), seed = 42L)
 
-        assertEquals(first.map { it.id }, second.map { it.id })
+        assertEquals(first.map { it.id.value }, second.map { it.id.value })
     }
 
     @Test
@@ -45,7 +37,7 @@ class LibraryPolicyTest {
         val first = LibraryPolicy.buildYourMix(mostPlayed = library, allTracks = emptyList(), seed = 1L)
         val second = LibraryPolicy.buildYourMix(mostPlayed = library, allTracks = emptyList(), seed = 2L)
 
-        assertNotEquals(first.map { it.id }, second.map { it.id })
+        assertNotEquals(first.map { it.id.value }, second.map { it.id.value })
     }
 
     @Test
@@ -54,10 +46,10 @@ class LibraryPolicyTest {
         val fallback = listOf(track(200L, "Fallback"))
 
         val fromMostPlayed = LibraryPolicy.buildYourMix(mostPlayed, fallback, seed = 7L)
-        assertEquals(listOf(100L), fromMostPlayed.map { it.id })
+        assertEquals(listOf(100L), fromMostPlayed.map { it.id.value })
 
         val fromFallback = LibraryPolicy.buildYourMix(emptyList(), fallback, seed = 7L)
-        assertEquals(listOf(200L), fromFallback.map { it.id })
+        assertEquals(listOf(200L), fromFallback.map { it.id.value })
     }
 
     @Test
@@ -66,7 +58,7 @@ class LibraryPolicyTest {
         val mix = LibraryPolicy.buildYourMix(mostPlayed = large, allTracks = emptyList(), seed = 3L)
 
         assertEquals(LibraryPolicy.MIX_SIZE, mix.size)
-        assertEquals("Mix must not duplicate tracks", mix.size, mix.map { it.id }.toSet().size)
+        assertEquals("Mix must not duplicate tracks", mix.size, mix.map { it.id.value }.toSet().size)
         assertTrue("Mix must draw only from the source", mix.all { it in large })
     }
 
@@ -80,7 +72,7 @@ class LibraryPolicyTest {
         val shuffled = LibraryPolicy.shuffled(library, seed = 99L)
 
         assertEquals(library.size, shuffled.size)
-        assertEquals(library.map { it.id }.toSet(), shuffled.map { it.id }.toSet())
-        assertEquals(shuffled.map { it.id }, LibraryPolicy.shuffled(library, seed = 99L).map { it.id })
+        assertEquals(library.map { it.id.value }.toSet(), shuffled.map { it.id.value }.toSet())
+        assertEquals(shuffled.map { it.id.value }, LibraryPolicy.shuffled(library, seed = 99L).map { it.id.value })
     }
 }

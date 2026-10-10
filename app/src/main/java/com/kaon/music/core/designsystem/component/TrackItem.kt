@@ -1,6 +1,7 @@
 package com.kaon.music.core.designsystem.component
 
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.foundation.background
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Box
@@ -30,6 +31,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
@@ -60,7 +62,8 @@ fun TrackItem(
     onAddToPlaylist: (() -> Unit)? = null,
     isOnline: Boolean = true
 ) {
-    val isItemDisabled = track.source == "YOUTUBE" && !isOnline
+    // "Requires network" is a property of the locator, not a source string.
+    val isItemDisabled = track.isOnline && !isOnline
     val titleColor by animateColorAsState(
         targetValue = if (isCurrent) KaonPrimary else if (isItemDisabled) KaonTextTertiary else KaonTextPrimary,
         label = "TitleColor"
@@ -82,12 +85,28 @@ fun TrackItem(
             .padding(horizontal = 16.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        ArtworkImage(
-            track = track,
-            sizeBucket = SizeBucket.THUMBNAIL,
-            modifier = Modifier.size(52.dp),
-            cornerRadius = 8.dp
-        )
+        Box(contentAlignment = Alignment.Center) {
+            ArtworkImage(
+                track = track,
+                sizeBucket = SizeBucket.THUMBNAIL,
+                modifier = Modifier.size(52.dp),
+                cornerRadius = 10.dp
+            )
+            // While this row is the sounding track, its artwork dims and the bars take over —
+            // the "here" marker shared with the queue sheet.
+            if (isCurrent) {
+                Box(
+                    modifier = Modifier
+                        .size(52.dp)
+                        .background(Color.Black.copy(alpha = 0.55f))
+                )
+                PlayingIndicator(
+                    modifier = Modifier.width(18.dp),
+                    color = KaonPrimary,
+                    isPlaying = isPlaying
+                )
+            }
+        }
 
         Spacer(modifier = Modifier.width(14.dp))
 
@@ -115,7 +134,7 @@ fun TrackItem(
                 )
 
                 val userSettings = com.kaon.music.core.designsystem.theme.LocalUserSettings.current
-                if (track.source != "YOUTUBE" && userSettings.showFormatBadges) {
+                if (!track.isOnline && userSettings.showFormatBadges) {
                     val isLosslessHighlight = track.isLossless && userSettings.showLosslessBadges
                     Spacer(modifier = Modifier.width(6.dp))
                     Surface(

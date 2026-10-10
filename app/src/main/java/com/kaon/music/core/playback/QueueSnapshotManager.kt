@@ -2,8 +2,10 @@ package com.kaon.music.core.playback
 
 import com.kaon.music.core.data.db.dao.QueueSnapshotDao
 import com.kaon.music.core.data.db.entity.QueueSnapshotEntity
+import com.kaon.music.core.data.model.ProviderId
 import com.kaon.music.core.data.model.QueueEntry
 import com.kaon.music.core.data.model.QueueSnapshot
+import com.kaon.music.core.data.model.TrackId
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -18,10 +20,16 @@ import timber.log.Timber
  * - Writes are debounced on timeline/position changes.
  * - Flushed immediately on pause/stop.
  * - Restored only on cold start when player is empty.
+ *
+ * Entries are canonical [TrackId]s. Provider identity is no longer encoded in the serialized string:
+ * a streamed track is a `tracks` row before it can be queued, so the row already knows its provider
+ * and locator. [legacyIdentityResolver] exists only to read snapshots written by builds that stored
+ * `hashId:videoId` pairs, where the hash half was never a real row.
  */
 class QueueSnapshotManager(
     private val queueSnapshotDao: QueueSnapshotDao,
-    private val serviceScope: CoroutineScope
+    private val serviceScope: CoroutineScope,
+    private val legacyIdentityResolver: suspend (ProviderId, String) -> TrackId? = { _, _ -> null }
 ) {
     private var debounceJob: Job? = null
     private var pendingSnapshot: QueueSnapshot? = null
@@ -49,12 +57,26 @@ class QueueSnapshotManager(
 
     suspend fun loadSnapshot(): QueueSnapshot? {
         val entity = queueSnapshotDao.getQueueSnapshot() ?: return null
-        val entries = parseEntries(entity.serializedTrackIds)
+        val tokens = parseTokens(entity.serializedTrackIds)
+        if (tokens.isEmpty()) return null
+
+        // A token that cannot be resolved shifts every later position left, so the saved index has to
+        // move with it or a restore would resume on the wrong track.
+        var droppedBeforeCurrent = 0
+        val entries = ArrayList<QueueEntry>(tokens.size)
+        tokens.forEachIndexed { index, token ->
+            val trackId = token.resolve()
+            if (trackId == null) {
+                if (index < entity.currentIndex) droppedBeforeCurrent++
+            } else {
+                entries += QueueEntry(trackId)
+            }
+        }
         if (entries.isEmpty()) return null
 
         return QueueSnapshot(
             entries = entries,
-            currentIndex = entity.currentIndex.coerceIn(0, entries.size - 1),
+            currentIndex = (entity.currentIndex - droppedBeforeCurrent).coerceIn(0, entries.size - 1),
             currentPositionMs = entity.currentPositionMs,
             isShuffleEnabled = entity.isShuffleEnabled,
             repeatMode = entity.repeatMode,
@@ -94,38 +116,54 @@ class QueueSnapshotManager(
     }
 
     /**
-     * Serializes entries as `trackId[:videoId]`, comma-separated.
+     * Serializes entries as comma-separated canonical [TrackId]s.
      *
-     * A bare `trackId` is still valid, so snapshots written by an older build load unchanged (their
-     * entries simply carry no provider identity and restore as local-only, exactly as before).
+     * Nothing provider-specific is written any more: the referenced `tracks` row owns the locator, so a
+     * snapshot is pure identity and a mixed local + YouTube queue needs no per-provider encoding.
      */
     private fun serializeEntries(entries: List<QueueEntry>): String =
-        entries.joinToString(",") { entry ->
-            if (entry.youtubeVideoId.isNullOrBlank()) {
-                entry.trackId.toString()
-            } else {
-                "${entry.trackId}$VIDEO_ID_SEPARATOR${entry.youtubeVideoId}"
-            }
-        }
+        entries.joinToString(",") { it.trackId.value.toString() }
 
-    private fun parseEntries(serialized: String): List<QueueEntry> {
+    /**
+     * Reads both the canonical form (`trackId`) and the legacy `hashId:videoId` form.
+     *
+     * Legacy tokens keep their provider identity instead of an id, because the hash half was never a
+     * real row; [resolve] turns them into canonical rows.
+     */
+    private fun parseTokens(serialized: String): List<SnapshotToken> {
         if (serialized.isBlank()) return emptyList()
         return serialized.split(",").mapNotNull { raw ->
             val token = raw.trim()
             if (token.isEmpty()) return@mapNotNull null
-            val separator = token.indexOf(VIDEO_ID_SEPARATOR)
+            val separator = token.indexOf(LEGACY_VIDEO_ID_SEPARATOR)
             if (separator < 0) {
-                token.toLongOrNull()?.let { QueueEntry(trackId = it) }
+                token.toLongOrNull()?.let { SnapshotToken(trackId = TrackId(it)) }
             } else {
-                val trackId = token.substring(0, separator).toLongOrNull() ?: return@mapNotNull null
-                val videoId = token.substring(separator + 1).takeIf { it.isNotBlank() }
-                QueueEntry(trackId = trackId, youtubeVideoId = videoId)
+                val legacyVideoId = token.substring(separator + 1).trim()
+                    .takeIf { it.isNotEmpty() } ?: return@mapNotNull null
+                SnapshotToken(
+                    trackId = token.substring(0, separator).trim().toLongOrNull()?.let(::TrackId),
+                    legacyVideoId = legacyVideoId
+                )
             }
         }
     }
 
+    /** Resolves one serialized position to a row id, or `null` when the position cannot be restored. */
+    private suspend fun SnapshotToken.resolve(): TrackId? =
+        if (legacyVideoId != null) {
+            legacyIdentityResolver(ProviderId.YOUTUBE, legacyVideoId)
+        } else {
+            trackId?.takeIf { it.isSaved }
+        }
+
+    private data class SnapshotToken(
+        val trackId: TrackId?,
+        val legacyVideoId: String? = null
+    )
+
     private companion object {
         // ':' cannot appear in a YouTube video id (they are [A-Za-z0-9_-]) or in a Long.
-        const val VIDEO_ID_SEPARATOR = ':'
+        const val LEGACY_VIDEO_ID_SEPARATOR = ':'
     }
 }

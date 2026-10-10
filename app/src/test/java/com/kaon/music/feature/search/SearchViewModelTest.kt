@@ -1,5 +1,9 @@
 package com.kaon.music.feature.search
 
+import com.kaon.music.core.data.db.dao.FakeTrackDaoBase
+import com.kaon.music.core.data.db.dao.FakePlaylistDaoBase
+import com.kaon.music.core.data.db.dao.FakePlayEventDaoBase
+import com.kaon.music.core.data.db.dao.FakeFavoriteDaoBase
 import android.content.ContextWrapper
 import com.kaon.music.core.data.db.dao.FavoriteDao
 import com.kaon.music.core.data.db.dao.PlayEventDao
@@ -60,14 +64,26 @@ class SearchViewModelTest {
 
     private class FakeSearchTrackDao(
         val storedTracks: MutableList<TrackEntity>
-    ) : TrackDao {
+    ) : FakeTrackDaoBase() {
+        // Phase 4: the search VM persists provider media before favoriting/playlist adds. Emulates
+        // Room's autoGenerate: an unsaved entity arrives with trackId=0 and must be given a real one.
+        override suspend fun upsertByExternalIdentity(track: com.kaon.music.core.data.db.entity.TrackEntity): Long {
+            val existing = storedTracks.find {
+                it.provider == track.provider && it.externalId == track.externalId
+            }
+            if (existing != null) return existing.trackId
+            val assignedId = (storedTracks.maxOfOrNull { it.trackId } ?: 0L) + 1L
+            storedTracks.add(track.copy(trackId = assignedId))
+            return assignedId
+        }
+
         override fun observeAllActiveTracks(): Flow<List<TrackEntity>> = flowOf(storedTracks.filter { !it.isMissing })
         override suspend fun getAllActiveTracks(): List<TrackEntity> = storedTracks.filter { !it.isMissing }
         override suspend fun getAllStoredTracks(): List<TrackEntity> = storedTracks.toList()
         override suspend fun getTrackById(trackId: Long): TrackEntity? = storedTracks.find { it.trackId == trackId }
         override suspend fun getTracksByIds(trackIds: List<Long>): List<TrackEntity> = storedTracks.filter { trackIds.contains(it.trackId) }
         override suspend fun getTrackByMediaStoreId(mediaStoreId: Long): TrackEntity? = storedTracks.find { it.mediaStoreId == mediaStoreId }
-        override fun searchTracks(query: String): Flow<List<TrackEntity>> {
+        override fun searchTracks(query: String, limit: Int): Flow<List<TrackEntity>> {
             val q = query.trim().lowercase()
             return flowOf(storedTracks.filter { it.title.lowercase().contains(q) || it.artist.lowercase().contains(q) })
         }
@@ -86,13 +102,13 @@ class SearchViewModelTest {
         override suspend fun insertTracks(tracks: List<TrackEntity>): List<Long> = tracks.map { it.trackId }
         override suspend fun updateTrack(track: TrackEntity) {}
         override suspend fun updateTracks(tracks: List<TrackEntity>) {}
-        override suspend fun reLinkTrack(trackId: Long, newMediaStoreId: Long, timestamp: Long) {}
+        override suspend fun reLinkTrack(trackId: Long, newMediaStoreId: Long, newRelativePath: String?, timestamp: Long) {}
         override suspend fun markTracksMissing(trackIds: List<Long>) {}
         override suspend fun markTracksPresent(trackIds: List<Long>, timestamp: Long) {}
         override suspend fun purgeOrphanedTracks(purgeCutoffTimestamp: Long): Int = 0
     }
 
-    private class FakeSearchFavoriteDao : FavoriteDao {
+    private class FakeSearchFavoriteDao : FakeFavoriteDaoBase() {
         override fun observeFavoriteTrackIds(): Flow<List<Long>> = flowOf(emptyList())
         override suspend fun getFavoriteTrackIds(): List<Long> = emptyList()
         override fun observeFavoriteTrackEntities(): Flow<List<TrackEntity>> = flowOf(emptyList())
@@ -103,7 +119,7 @@ class SearchViewModelTest {
         override suspend fun removeFavorite(trackId: Long) {}
     }
 
-    private class FakeSearchPlayEventDao : PlayEventDao {
+    private class FakeSearchPlayEventDao : FakePlayEventDaoBase() {
         override suspend fun insertEvent(event: PlayEventEntity): Long = 1L
         override fun observeRecentlyPlayedTrackEntities(limit: Int): Flow<List<TrackEntity>> = flowOf(emptyList())
         override suspend fun getRecentlyPlayedTrackEntities(limit: Int): List<TrackEntity> = emptyList()
@@ -112,7 +128,7 @@ class SearchViewModelTest {
         override suspend fun clearAllEvents(): Int = 0
     }
 
-    private class FakeSearchPlaylistDao(private val fakeTrackDao: FakeSearchTrackDao) : PlaylistDao {
+    private class FakeSearchPlaylistDao(private val fakeTrackDao: FakeSearchTrackDao) : FakePlaylistDaoBase() {
         private var nextId = 1L
         val playlists = mutableListOf<PlaylistEntity>()
         val playlistTracks = mutableListOf<PlaylistTrackEntity>()
@@ -235,19 +251,29 @@ class SearchViewModelTest {
                 scanner = MediaStoreScanner(dummyContext),
                 trackDao = fakeTrackDao
             ),
-            playEventDao = fakePlayDao
+            playEventDao = fakePlayDao,
+            mappingDispatcher = mainDispatcherRule.testDispatcher
         )
-        playlistRepository = PlaylistRepository(fakePlaylistDao, fakeTrackDao, fakeFavDao)
+        playlistRepository = PlaylistRepository(
+            fakePlaylistDao,
+            fakeTrackDao,
+            fakeFavDao,
+            trackRepository = trackRepository,
+            mappingDispatcher = mainDispatcherRule.testDispatcher
+        )
 
         playbackFacade = PlaybackFacade(
             context = dummyContext,
             trackRepository = trackRepository
         )
-        viewModel = SearchViewModel(
+        val libraryController = com.kaon.music.core.data.repository.DefaultLibraryController(
             trackRepository = trackRepository,
-            playbackFacade = playbackFacade,
+            playlistRepository = playlistRepository
+        )
+        viewModel = SearchViewModel(
+            libraryController = libraryController,
+            playerController = playbackFacade,
             networkConnectivityMonitor = FakeNetworkMonitor(false),
-            playlistRepository = playlistRepository,
             computeDispatcher = mainDispatcherRule.testDispatcher
         )
     }
@@ -270,20 +296,7 @@ class SearchViewModelTest {
         backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { viewModel.playlists.collect {} }
         advanceUntilIdle()
 
-        val track = Track(
-            id = 1L,
-            mediaStoreId = 101L,
-            title = "Midnight Echoes",
-            artist = "Solaris",
-            album = "Deep Space",
-            albumId = 10L,
-            durationMs = 200000L,
-            sizeBytes = 4000000L,
-            dateModified = 1000L,
-            dateAdded = 1000L,
-            isMissing = false,
-            isFavorite = false
-        )
+        val track = com.kaon.music.core.data.model.remoteTrack(externalId = "midnight", title = "Midnight Echoes", artist = "Solaris")
 
         viewModel.createPlaylistAndAddTrack("Night Drives", track)
         advanceUntilIdle()

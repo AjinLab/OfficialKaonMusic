@@ -23,4 +23,7 @@ dependencyResolutionManagement {
 rootProject.name = "KaonMusic"
 include(":app")
 include(":baselineprofile")
+include(":core-extraction")
 include(":innertube")
+include(":core:kernel")
+

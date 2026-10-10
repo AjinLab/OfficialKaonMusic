@@ -1,5 +1,6 @@
 package com.kaon.music.core.data.db.dao
 
+import androidx.paging.PagingSource
 import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
@@ -22,6 +23,12 @@ interface PlaylistDao {
         val track_count: Int
     )
 
+    /** Header facts for a playlist detail screen: no member rows required. */
+    data class PlaylistStats(
+        val track_count: Int,
+        val total_duration_ms: Long
+    )
+
     // ==================== Playlist CRUD ====================
 
     @Query("""
@@ -42,6 +49,43 @@ interface PlaylistDao {
     @Query("SELECT * FROM playlists WHERE playlist_id = :playlistId")
     suspend fun getPlaylistById(playlistId: Long): PlaylistEntity?
 
+    /** Member count without loading members. Matches `observeAllPlaylistsWithCount`'s definition. */
+    @Query(
+        """
+        SELECT COUNT(*) FROM playlist_tracks pt
+        INNER JOIN tracks t ON t.track_id = pt.track_id
+        WHERE pt.playlist_id = :playlistId AND t.is_missing = 0
+        """
+    )
+    suspend fun countTracksInPlaylist(playlistId: Long): Int
+
+    /**
+     * Count and total duration for the detail header.
+     *
+     * The header used to derive both by summing the materialised member list; an aggregate gives the
+     * same two numbers without the rows, which matters once the list itself is paged.
+     */
+    @Query(
+        """
+        SELECT COUNT(*) AS track_count, COALESCE(SUM(t.duration_ms), 0) AS total_duration_ms
+        FROM playlist_tracks pt
+        INNER JOIN tracks t ON t.track_id = pt.track_id
+        WHERE pt.playlist_id = :playlistId AND t.is_missing = 0
+        """
+    )
+    fun observePlaylistStats(playlistId: Long): Flow<PlaylistStats>
+
+    /** Member ids in playlist order, for reorder operations and queue construction. */
+    @Query(
+        """
+        SELECT t.track_id FROM tracks t
+        INNER JOIN playlist_tracks pt ON t.track_id = pt.track_id
+        WHERE pt.playlist_id = :playlistId AND t.is_missing = 0
+        ORDER BY pt.position ASC
+        """
+    )
+    suspend fun getOrderedTrackIds(playlistId: Long): List<Long>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertPlaylist(playlist: PlaylistEntity): Long
 
@@ -52,6 +96,31 @@ interface PlaylistDao {
     suspend fun deletePlaylist(playlistId: Long)
 
     // ==================== Playlist Track Membership (M5-D2) ====================
+
+    /**
+     * Paged playlist members with SQL-resolved favorite state.
+     *
+     * `position ASC` is served by the existing `(playlist_id, position)` index, so paging reads the
+     * pages the UI shows rather than the whole membership.
+     *
+     * No provider filter: a playlist holds local and provider media in one list (spec §14). The
+     * `is_missing = 0` predicate hides a *local* file that has vanished without deleting the user's
+     * membership row (M5-D2); a streamed member is never missing, so it is unaffected.
+     */
+    @Query(
+        """
+        SELECT t.track_id, t.media_store_id, t.title, t.artist, t.artist_id, t.album, t.album_id,
+               t.track_number, t.disc_number, t.year, t.duration_ms, t.size_bytes, t.date_modified,
+               t.date_added, t.relative_path, t.is_missing, t.provider, t.external_id, t.mime_type,
+               t.artwork_url,
+               EXISTS(SELECT 1 FROM favorite_tracks f WHERE f.track_id = t.track_id) AS is_favorite
+        FROM tracks t
+        INNER JOIN playlist_tracks pt ON t.track_id = pt.track_id
+        WHERE pt.playlist_id = :playlistId AND t.is_missing = 0
+        ORDER BY pt.position ASC
+        """
+    )
+    fun pagingTracksForPlaylist(playlistId: Long): PagingSource<Int, TrackRow>
 
     /**
      * Observes non-orphaned tracks in a playlist ordered by explicit position ASC.

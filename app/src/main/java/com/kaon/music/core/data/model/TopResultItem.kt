@@ -1,7 +1,5 @@
 package com.kaon.music.core.data.model
 
-import android.net.Uri
-
 enum class TopResultType {
     SONG,
     VIDEO,
@@ -18,7 +16,7 @@ data class TopResultItem(
     val title: String,
     val subtitle: String,
     val type: TopResultType,
-    val thumbnailUri: Uri? = null,
+    val thumbnailUrl: String? = null,
     val track: Track? = null,
     val album: Album? = null,
     val artist: Artist? = null,

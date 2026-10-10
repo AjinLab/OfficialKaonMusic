@@ -1,12 +1,11 @@
 package com.kaon.music.feature.player
 
 import android.content.ContextWrapper
-import com.kaon.music.core.data.db.dao.FavoriteDao
-import com.kaon.music.core.data.db.dao.PlayEventDao
+import com.kaon.music.core.data.db.dao.FakeFavoriteDaoBase
+import com.kaon.music.core.data.db.dao.FakePlayEventDaoBase
+import com.kaon.music.core.data.db.dao.FakePlaylistDaoBase
+import com.kaon.music.core.data.db.dao.FakeTrackDaoBase
 import com.kaon.music.core.data.db.dao.PlaylistDao
-import com.kaon.music.core.data.db.dao.TrackDao
-import com.kaon.music.core.data.db.entity.FavoriteTrackEntity
-import com.kaon.music.core.data.db.entity.PlayEventEntity
 import com.kaon.music.core.data.db.entity.PlaylistEntity
 import com.kaon.music.core.data.db.entity.PlaylistTrackEntity
 import com.kaon.music.core.data.db.entity.TrackEntity
@@ -80,56 +79,22 @@ class PlayerViewModelTest {
 
     private class FakeTestTrackDao(
         val storedTracks: MutableList<TrackEntity>
-    ) : TrackDao {
+    ) : FakeTrackDaoBase() {
         override fun observeAllActiveTracks(): Flow<List<TrackEntity>> = flowOf(storedTracks.filter { !it.isMissing })
         override suspend fun getAllActiveTracks(): List<TrackEntity> = storedTracks.filter { !it.isMissing }
         override suspend fun getAllStoredTracks(): List<TrackEntity> = storedTracks.toList()
         override suspend fun getTrackById(trackId: Long): TrackEntity? = storedTracks.find { it.trackId == trackId }
         override suspend fun getTracksByIds(trackIds: List<Long>): List<TrackEntity> = storedTracks.filter { trackIds.contains(it.trackId) }
         override suspend fun getTrackByMediaStoreId(mediaStoreId: Long): TrackEntity? = storedTracks.find { it.mediaStoreId == mediaStoreId }
-        override fun searchTracks(query: String): Flow<List<TrackEntity>> = flowOf(emptyList())
-        override fun observeRecentlyAddedTracks(limit: Int): Flow<List<TrackEntity>> = flowOf(emptyList())
-        override suspend fun getRecentlyAddedTracks(limit: Int): List<TrackEntity> = emptyList()
-        override fun observeAllAlbums(): Flow<List<TrackDao.AlbumSummary>> = flowOf(emptyList())
-        override suspend fun getAlbumById(albumId: Long): TrackDao.AlbumSummary? = null
-        override fun observeTracksForAlbum(albumId: Long): Flow<List<TrackEntity>> = flowOf(emptyList())
-        override suspend fun getTracksForAlbum(albumId: Long): List<TrackEntity> = emptyList()
-        override fun observeAllArtists(): Flow<List<TrackDao.ArtistSummary>> = flowOf(emptyList())
-        override fun observeAlbumsForArtist(artistNormalized: String): Flow<List<TrackDao.AlbumSummary>> = flowOf(emptyList())
-        override fun observeTracksForArtist(artistNormalized: String): Flow<List<TrackEntity>> = flowOf(emptyList())
-        override suspend fun getTracksForArtist(artistNormalized: String): List<TrackEntity> = emptyList()
-        override suspend fun findReLinkCandidates(minDurationMs: Long, maxDurationMs: Long, sizeBytes: Long): List<TrackEntity> = emptyList()
         override suspend fun insertTrack(track: TrackEntity): Long = track.trackId
         override suspend fun insertTracks(tracks: List<TrackEntity>): List<Long> = tracks.map { it.trackId }
-        override suspend fun updateTrack(track: TrackEntity) {}
-        override suspend fun updateTracks(tracks: List<TrackEntity>) {}
-        override suspend fun reLinkTrack(trackId: Long, newMediaStoreId: Long, timestamp: Long) {}
-        override suspend fun markTracksMissing(trackIds: List<Long>) {}
-        override suspend fun markTracksPresent(trackIds: List<Long>, timestamp: Long) {}
-        override suspend fun purgeOrphanedTracks(purgeCutoffTimestamp: Long): Int = 0
     }
 
-    private class FakeTestFavoriteDao : FavoriteDao {
-        override fun observeFavoriteTrackIds(): Flow<List<Long>> = flowOf(emptyList())
-        override suspend fun getFavoriteTrackIds(): List<Long> = emptyList()
-        override fun observeFavoriteTrackEntities(): Flow<List<TrackEntity>> = flowOf(emptyList())
-        override suspend fun getFavoriteTrackEntities(): List<TrackEntity> = emptyList()
-        override fun observeIsFavorite(trackId: Long): Flow<Boolean> = flowOf(false)
-        override suspend fun isFavorite(trackId: Long): Boolean = false
-        override suspend fun addFavorite(favorite: FavoriteTrackEntity) {}
-        override suspend fun removeFavorite(trackId: Long) {}
-    }
+    private class FakeTestFavoriteDao : FakeFavoriteDaoBase()
 
-    private class FakeTestPlayEventDao : PlayEventDao {
-        override suspend fun insertEvent(event: PlayEventEntity): Long = 1L
-        override fun observeRecentlyPlayedTrackEntities(limit: Int): Flow<List<TrackEntity>> = flowOf(emptyList())
-        override suspend fun getRecentlyPlayedTrackEntities(limit: Int): List<TrackEntity> = emptyList()
-        override fun observeMostPlayedTrackEntities(limit: Int): Flow<List<TrackEntity>> = flowOf(emptyList())
-        override suspend fun getMostPlayedTrackEntities(limit: Int): List<TrackEntity> = emptyList()
-        override suspend fun clearAllEvents(): Int = 0
-    }
+    private class FakeTestPlayEventDao : FakePlayEventDaoBase()
 
-    private class FakeTestPlaylistDao(private val trackDao: FakeTestTrackDao) : PlaylistDao {
+    private class FakeTestPlaylistDao(private val trackDao: FakeTestTrackDao) : FakePlaylistDaoBase() {
         private var nextId = 1L
         val playlists = mutableListOf<PlaylistEntity>()
         val playlistTracks = mutableListOf<PlaylistTrackEntity>()
@@ -208,6 +173,12 @@ class PlayerViewModelTest {
             return trackIds.mapNotNull { id -> trackDao.storedTracks.find { it.trackId == id && !it.isMissing } }
         }
 
+        override suspend fun countTracksInPlaylist(playlistId: Long): Int =
+            getTracksForPlaylist(playlistId).size
+
+        override suspend fun getOrderedTrackIds(playlistId: Long): List<Long> =
+            getTracksForPlaylist(playlistId).map { it.trackId }
+
         override suspend fun getPlaylistTrackEntries(playlistId: Long): List<PlaylistTrackEntity> =
             playlistTracks.filter { it.playlistId == playlistId }.sortedBy { it.position }
 
@@ -236,30 +207,26 @@ class PlayerViewModelTest {
     private lateinit var playbackFacade: PlaybackFacade
     private lateinit var viewModel: PlayerViewModel
 
-    private val domainTrack1 = Track(
+    private val domainTrack1 = com.kaon.music.core.data.model.localTrack(
         id = 1L,
-        mediaStoreId = 101L,
         title = "Resonance",
         artist = "HOME",
         album = "Odyssey",
         albumId = 10L,
-        durationMs = 212000L,
-        sizeBytes = 3500000L,
-        dateModified = 1000L,
-        source = "LOCAL"
+        durationMs = 212_000L,
+        sizeBytes = 3_500_000L,
+        mimeType = "audio/mpeg"
     )
 
-    private val domainTrack2 = Track(
+    private val domainTrack2 = com.kaon.music.core.data.model.localTrack(
         id = 2L,
-        mediaStoreId = 102L,
         title = "Starboy",
         artist = "The Weeknd",
         album = "Starboy",
         albumId = 20L,
-        durationMs = 230000L,
-        sizeBytes = 4000000L,
-        dateModified = 1000L,
-        source = "LOCAL"
+        durationMs = 230_000L,
+        sizeBytes = 4_000_000L,
+        mimeType = "audio/mpeg"
     )
 
     @Before
@@ -280,17 +247,26 @@ class PlayerViewModelTest {
             ),
             playEventDao = fakePlayDao
         )
-        playlistRepository = PlaylistRepository(fakePlaylistDao, fakeTrackDao, fakeFavDao)
+        playlistRepository = PlaylistRepository(
+            playlistDao = fakePlaylistDao,
+            trackDao = fakeTrackDao,
+            favoriteDao = fakeFavDao,
+            trackRepository = trackRepository
+        )
 
         playbackFacade = PlaybackFacade(
             context = dummyContext,
             trackRepository = trackRepository
         )
 
-        viewModel = PlayerViewModel(
-            playbackFacade = playbackFacade,
+        val libraryController = com.kaon.music.core.data.repository.DefaultLibraryController(
             trackRepository = trackRepository,
             playlistRepository = playlistRepository
+        )
+
+        viewModel = PlayerViewModel(
+            playerController = playbackFacade,
+            libraryController = libraryController
         )
     }
 
@@ -371,11 +347,14 @@ class PlayerViewModelTest {
             override suspend fun getTrackPreviewUrl(track: Track): String? = null
         }
 
-        val vm = PlayerViewModel(
-            playbackFacade = playbackFacade,
+        val libraryController = com.kaon.music.core.data.repository.DefaultLibraryController(
             trackRepository = trackRepository,
             playlistRepository = playlistRepository,
             metadataRepository = fakeMetadataRepo
+        )
+        val vm = PlayerViewModel(
+            playerController = playbackFacade,
+            libraryController = libraryController
         )
 
         vm.fetchLyricsAndMetadata(domainTrack1)
@@ -388,9 +367,11 @@ class PlayerViewModelTest {
     @Test
     fun fullPlayer_collapsesWhenCurrentTrackIsCleared() = runTest {
         val vm = PlayerViewModel(
-            playbackFacade = playbackFacade,
-            trackRepository = trackRepository,
-            playlistRepository = playlistRepository
+            playerController = playbackFacade,
+            libraryController = com.kaon.music.core.data.repository.DefaultLibraryController(
+                trackRepository = trackRepository,
+                playlistRepository = playlistRepository
+            )
         )
 
         playbackFacade.updateQueueForTesting(

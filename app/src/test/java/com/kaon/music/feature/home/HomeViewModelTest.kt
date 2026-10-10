@@ -1,5 +1,8 @@
 package com.kaon.music.feature.home
 
+import com.kaon.music.core.data.db.dao.FakeTrackDaoBase
+import com.kaon.music.core.data.db.dao.FakePlayEventDaoBase
+import com.kaon.music.core.data.db.dao.FakeFavoriteDaoBase
 import android.content.ContextWrapper
 import com.kaon.music.core.data.db.dao.FavoriteDao
 import com.kaon.music.core.data.db.dao.PlayEventDao
@@ -92,14 +95,14 @@ class HomeViewModelTest {
 
     private class FakeHomeTrackDao(
         val storedTracks: MutableList<TrackEntity>
-    ) : TrackDao {
+    ) : FakeTrackDaoBase() {
         override fun observeAllActiveTracks(): Flow<List<TrackEntity>> = flowOf(storedTracks.filter { !it.isMissing })
         override suspend fun getAllActiveTracks(): List<TrackEntity> = storedTracks.filter { !it.isMissing }
         override suspend fun getAllStoredTracks(): List<TrackEntity> = storedTracks.toList()
         override suspend fun getTrackById(trackId: Long): TrackEntity? = storedTracks.find { it.trackId == trackId }
         override suspend fun getTracksByIds(trackIds: List<Long>): List<TrackEntity> = storedTracks.filter { trackIds.contains(it.trackId) }
         override suspend fun getTrackByMediaStoreId(mediaStoreId: Long): TrackEntity? = storedTracks.find { it.mediaStoreId == mediaStoreId }
-        override fun searchTracks(query: String): Flow<List<TrackEntity>> = flowOf(emptyList())
+        override fun searchTracks(query: String, limit: Int): Flow<List<TrackEntity>> = flowOf(emptyList())
         override fun observeRecentlyAddedTracks(limit: Int): Flow<List<TrackEntity>> =
             flowOf(storedTracks.sortedByDescending { it.dateAdded }.take(limit))
         override suspend fun getRecentlyAddedTracks(limit: Int): List<TrackEntity> =
@@ -123,7 +126,7 @@ class HomeViewModelTest {
         }
         override suspend fun updateTrack(track: TrackEntity) {}
         override suspend fun updateTracks(tracks: List<TrackEntity>) {}
-        override suspend fun reLinkTrack(trackId: Long, newMediaStoreId: Long, timestamp: Long) {}
+        override suspend fun reLinkTrack(trackId: Long, newMediaStoreId: Long, newRelativePath: String?, timestamp: Long) {}
         override suspend fun markTracksMissing(trackIds: List<Long>) {}
         override suspend fun markTracksPresent(trackIds: List<Long>, timestamp: Long) {}
         override suspend fun purgeOrphanedTracks(purgeCutoffTimestamp: Long): Int = 0
@@ -131,7 +134,7 @@ class HomeViewModelTest {
 
     private class FakeHomeFavoriteDao(
         val favorites: MutableSet<Long>
-    ) : FavoriteDao {
+    ) : FakeFavoriteDaoBase() {
         private val flow = MutableStateFlow<List<Long>>(favorites.toList())
 
         override fun observeFavoriteTrackIds(): Flow<List<Long>> {
@@ -156,7 +159,7 @@ class HomeViewModelTest {
     private class FakeHomePlayEventDao(
         val mostPlayed: List<TrackEntity>,
         val recentlyPlayed: List<TrackEntity>
-    ) : PlayEventDao {
+    ) : FakePlayEventDaoBase() {
         override suspend fun insertEvent(event: PlayEventEntity): Long = 1L
         override fun observeRecentlyPlayedTrackEntities(limit: Int): Flow<List<TrackEntity>> =
             flowOf(recentlyPlayed.take(limit))
@@ -191,14 +194,20 @@ class HomeViewModelTest {
                 scanner = MediaStoreScanner(dummyContext),
                 trackDao = fakeTrackDao
             ),
-            playEventDao = fakePlayDao
+            playEventDao = fakePlayDao,
+            mappingDispatcher = mainDispatcherRule.testDispatcher
         )
 
         playbackFacade = PlaybackFacade(
             context = dummyContext,
             trackRepository = trackRepository
         )
-        viewModel = HomeViewModel(trackRepository, playbackFacade)
+        val libraryController = com.kaon.music.core.data.repository.DefaultLibraryController(trackRepository = trackRepository)
+        viewModel = HomeViewModel(
+            libraryController = libraryController,
+            playerController = playbackFacade,
+            computeDispatcher = mainDispatcherRule.testDispatcher
+        )
     }
 
     @Test

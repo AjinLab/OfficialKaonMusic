@@ -27,3 +27,8 @@ release-keystore.properties
 # Kotlin tooling metadata
 .kotlin/
 
+# Agent IDE & local scratch
+.agents/
+.claude/
+skills-lock.json
+invidious/

@@ -3,22 +3,29 @@ package com.kaon.music.feature.library
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import androidx.paging.PagingData
+import androidx.paging.cachedIn
 import com.kaon.music.core.data.model.Album
 import com.kaon.music.core.data.model.Artist
 import com.kaon.music.core.data.model.Playlist
 import com.kaon.music.core.data.model.Track
-import com.kaon.music.core.data.repository.PlaylistRepository
-import com.kaon.music.core.data.repository.TrackRepository
-import com.kaon.music.core.playback.PlaybackEvent
-import com.kaon.music.core.playback.PlaybackFacade
+import com.kaon.music.core.model.ErrorMapper
+import com.kaon.music.core.model.LibraryController
+import com.kaon.music.core.model.LibrarySort
+import com.kaon.music.core.model.PlayerController
+import com.kaon.music.core.model.PlaylistStats
+import com.kaon.music.core.model.UserMessageBus
 import com.kaon.music.core.policy.LibraryPolicy
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
@@ -40,46 +47,56 @@ enum class LibraryFilter {
 enum class TrackSortOrder {
     TITLE_ASC,
     RECENTLY_ADDED,
-    MOST_PLAYED
+    MOST_PLAYED;
+
+    /** The SQL ordering this UI sort maps to. Sorting is the database's job (ARCHITECTURE.md §6). */
+    internal fun toLibrarySort(): LibrarySort = when (this) {
+        TITLE_ASC -> LibrarySort.TITLE_ASC
+        RECENTLY_ADDED -> LibrarySort.DATE_ADDED_DESC
+        MOST_PLAYED -> LibrarySort.PLAY_COUNT_DESC
+    }
 }
 
+/**
+ * Non-paged library state.
+ *
+ * The large collections — tracks, albums, artists, favorites, playlist members — are no longer here.
+ * They arrive as separate `Flow<PagingData<…>>` streams the screen collects with
+ * `collectAsLazyPagingItems`, so no ViewModel holds a copy of the library. What remains is either
+ * bounded by a `LIMIT` (the Recent rows), tiny (playlists, selection), or a count.
+ */
 data class LibraryUiState(
     val selectedFilter: LibraryFilter = LibraryFilter.TRACKS,
     val trackSortOrder: TrackSortOrder = TrackSortOrder.TITLE_ASC,
-    val tracks: List<Track> = emptyList(),
-    val albums: List<Album> = emptyList(),
-    val artists: List<Artist> = emptyList(),
-    val favoriteTracks: List<Track> = emptyList(),
+    val trackCount: Int = 0,
+    val favoriteCount: Int = 0,
     val recentTracks: List<Track> = emptyList(),
-    val mostPlayedTracks: List<Track> = emptyList(),
     val recentlyAddedTracks: List<Track> = emptyList(),
     val playlists: List<Playlist> = emptyList(),
-    val isLikedSongsSelected: Boolean = false,
     val selectedAlbum: Album? = null,
     val albumTracks: List<Track> = emptyList(),
     val selectedArtist: Artist? = null,
     val artistAlbums: List<Album> = emptyList(),
     val artistTracks: List<Track> = emptyList(),
     val selectedPlaylist: Playlist? = null,
-    val playlistTracks: List<Track> = emptyList(),
     val isSyncing: Boolean = false,
     val hasPermission: Boolean = true,
     val searchQuery: String = "",
     val activeTrackId: Long? = null,
-    val isPlaying: Boolean = false,
-    val userMessage: String? = null
+    val isPlaying: Boolean = false
 )
 
-@OptIn(ExperimentalCoroutinesApi::class)
+@OptIn(ExperimentalCoroutinesApi::class, FlowPreview::class)
 class LibraryViewModel(
-    private val trackRepository: TrackRepository,
-    private val playbackFacade: PlaybackFacade,
-    private val playlistRepository: PlaylistRepository,
+    private val libraryController: LibraryController,
+    private val playerController: PlayerController,
     private val savedStateHandle: SavedStateHandle = SavedStateHandle(),
+    private val userMessageBus: UserMessageBus? = null,
     // Injected so tests can drive the sort/filter pipeline on the test scheduler. Production keeps
     // this work off the main thread (ARCHITECTURE.md §5.4).
     private val computeDispatcher: CoroutineDispatcher = Dispatchers.Default
 ) : ViewModel() {
+
 
     // Browse selection is saved state (ARCHITECTURE.md §5.5): the active filter and sort order must
     // survive rotation and process death. Album/artist/playlist selection is stored as an id and
@@ -93,125 +110,90 @@ class LibraryViewModel(
         savedStateHandle.get<String>(KEY_SORT)?.let { runCatching { TrackSortOrder.valueOf(it) }.getOrNull() }
             ?: TrackSortOrder.TITLE_ASC
     )
-    private val _isLikedSongsSelected = MutableStateFlow(savedStateHandle.get<Boolean>(KEY_LIKED) ?: false)
     private val _isSyncing = MutableStateFlow(false)
     private val _hasPermission = MutableStateFlow(true)
     private val _searchQuery = MutableStateFlow(savedStateHandle.get<String>(KEY_QUERY) ?: "")
-    private val _userMessage = MutableStateFlow<String?>(null)
 
     private val _selectedAlbum = MutableStateFlow<Album?>(null)
     private val _selectedArtist = MutableStateFlow<Artist?>(null)
     private val _selectedPlaylist = MutableStateFlow<Playlist?>(null)
 
-    private val _filteredTracks = combine(
-        trackRepository.observeAllTracks(),
-        _searchQuery
-    ) { tracks, query ->
-        if (query.isBlank()) {
-            tracks
-        } else {
-            val q = query.lowercase().trim()
-            tracks.filter {
-                it.title.lowercase().contains(q) ||
-                        it.artist.lowercase().contains(q) ||
-                        it.album.lowercase().contains(q)
-            }
-        }
-    }
+    /**
+     * Debounced query for database-backed reads.
+     *
+     * Every keystroke used to re-filter the materialised library. Debouncing here means a burst of
+     * typing issues one query, and `distinctUntilChanged` suppresses re-queries when normalization
+     * collapses two inputs to the same term.
+     */
+    private val debouncedQuery: Flow<String> = _searchQuery
+        .debounce { if (it.isEmpty()) 0L else SEARCH_DEBOUNCE_MS }
+        .map { it.trim() }
+        .distinctUntilChanged()
 
-    private val _filteredAlbums = combine(
-        trackRepository.observeAllAlbums(),
-        _searchQuery
-    ) { albums, query ->
-        if (query.isBlank()) {
-            albums
-        } else {
-            val q = query.lowercase().trim()
-            albums.filter {
-                it.title.lowercase().contains(q) ||
-                        it.artist.lowercase().contains(q)
-            }
+    /**
+     * Paged library tracks. Query and sort are both applied in SQL.
+     *
+     * `cachedIn(viewModelScope)` keeps loaded pages across configuration change and — importantly —
+     * makes this multicast, so the screen re-collecting does not restart paging from page zero.
+     */
+    val pagedTracks: Flow<PagingData<Track>> = combine(
+        debouncedQuery,
+        _trackSortOrder
+    ) { query, sort -> query to sort }
+        .flatMapLatest { (query, sort) ->
+            libraryController.pagedTracks(query = query, sort = sort.toLibrarySort())
         }
-    }
+        .cachedIn(viewModelScope)
 
-    private val _filteredArtists = combine(
-        trackRepository.observeAllArtists(),
-        _searchQuery
-    ) { artists, query ->
-        if (query.isBlank()) {
-            artists
-        } else {
-            val q = query.lowercase().trim()
-            artists.filter {
-                it.name.lowercase().contains(q)
-            }
-        }
-    }
+    val pagedFavoriteTracks: Flow<PagingData<Track>> = debouncedQuery
+        .flatMapLatest { query -> libraryController.pagedFavoriteTracks(query = query) }
+        .cachedIn(viewModelScope)
 
-    private val _filteredFavTracks = combine(
-        trackRepository.observeFavoriteTracks(),
-        _searchQuery
-    ) { favs, query ->
-        if (query.isBlank()) {
-            favs
-        } else {
-            val q = query.lowercase().trim()
-            favs.filter {
-                it.title.lowercase().contains(q) ||
-                        it.artist.lowercase().contains(q) ||
-                        it.album.lowercase().contains(q)
-            }
-        }
-    }
+    val pagedAlbums: Flow<PagingData<Album>> = debouncedQuery
+        .flatMapLatest { query -> libraryController.pagedAlbums(query = query) }
+        .cachedIn(viewModelScope)
 
-    private val _filteredPlaylists = combine(
-        playlistRepository.observeAllPlaylists(),
-        _searchQuery
-    ) { playlists, query ->
-        if (query.isBlank()) {
-            playlists
-        } else {
-            val q = query.lowercase().trim()
-            playlists.filter { it.name.lowercase().contains(q) }
+    val pagedArtists: Flow<PagingData<Artist>> = debouncedQuery
+        .flatMapLatest { query -> libraryController.pagedArtists(query = query) }
+        .cachedIn(viewModelScope)
+
+    val pagedPlaylistTracks: Flow<PagingData<Track>> = _selectedPlaylist
+        .map { it?.id }
+        .distinctUntilChanged()
+        .flatMapLatest { playlistId ->
+            if (playlistId == null) flowOf(PagingData.empty())
+            else libraryController.pagedTracksForPlaylist(playlistId)
         }
-    }
+        .cachedIn(viewModelScope)
+
+    /** Playlist header aggregate, so the detail screen does not sum a materialised member list. */
+    val playlistStats: StateFlow<PlaylistStats> = _selectedPlaylist
+        .map { it?.id }
+        .distinctUntilChanged()
+        .flatMapLatest { playlistId ->
+            if (playlistId == null) flowOf(PlaylistStats()) else libraryController.observePlaylistStats(playlistId)
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), PlaylistStats())
 
     private val _albumTracks = _selectedAlbum.flatMapLatest { album ->
         if (album == null) flowOf(emptyList())
-        else trackRepository.observeTracksForAlbum(album.albumId)
+        else libraryController.observeTracksForAlbum(album.albumId)
     }
 
     private val _artistAlbums = _selectedArtist.flatMapLatest { artist ->
         if (artist == null) flowOf(emptyList())
-        else trackRepository.observeAlbumsForArtist(artist.name)
+        else libraryController.observeAlbumsForArtist(artist.name)
     }
 
     private val _artistTracks = _selectedArtist.flatMapLatest { artist ->
         if (artist == null) flowOf(emptyList())
-        else trackRepository.observeTracksForArtist(artist.name)
+        else libraryController.observeTracksForArtist(artist.name)
     }
-
-    private val _playlistTracks = _selectedPlaylist.flatMapLatest { playlist ->
-        if (playlist == null) flowOf(emptyList())
-        else playlistRepository.observeTracksForPlaylist(playlist.id)
-    }
-
-    private data class BrowseData(
-        val tracks: List<Track>,
-        val albums: List<Album>,
-        val artists: List<Artist>,
-        val favTracks: List<Track>,
-        val recentTracks: List<Track>,
-        val mostPlayedTracks: List<Track>,
-        val recentlyAddedTracks: List<Track>,
-        val playlists: List<Playlist>
-    )
 
     private data class DetailData(
         val albumTracks: List<Track>,
         val artistAlbums: List<Album>,
-        val artistTracks: List<Track>,
-        val playlistTracks: List<Track>
+        val artistTracks: List<Track>
     )
 
     private data class SelectedNav(
@@ -221,73 +203,67 @@ class LibraryViewModel(
         val query: String
     )
 
-    private val _recentData = combine(
-        trackRepository.observeRecentlyPlayedTracks(limit = 50),
-        trackRepository.observeMostPlayedTracks(limit = 50),
-        trackRepository.observeRecentlyAddedTracks(limit = 50)
-    ) { recent, mostPlayed, added ->
-        Triple(recent, mostPlayed, added)
-    }
-
-    private data class BrowseSubData(
-        val recent: List<Track>,
-        val mostPlayed: List<Track>,
-        val added: List<Track>,
+    /**
+     * Counts and the two bounded Recent rows.
+     *
+     * These are the only library reads left in the state object, and each is `LIMIT`-ed or an
+     * aggregate — cost is independent of library size.
+     */
+    private data class BrowseData(
+        val trackCount: Int,
+        val favoriteCount: Int,
+        val recentTracks: List<Track>,
+        val recentlyAddedTracks: List<Track>,
         val playlists: List<Playlist>
     )
 
+    private val _counts = combine(
+        debouncedQuery.flatMapLatest { libraryController.observeTrackCount(it) },
+        debouncedQuery.flatMapLatest { libraryController.observeFavoriteCount(it) }
+    ) { trackCount, favoriteCount -> trackCount to favoriteCount }
+
     private val _browseData = combine(
-        _filteredTracks,
-        _filteredAlbums,
-        _filteredArtists,
-        _filteredFavTracks,
-        combine(_recentData, _filteredPlaylists) { (recent, mostPlayed, added), playlists ->
-            BrowseSubData(recent, mostPlayed, added, playlists)
-        }
-    ) { tracks, albums, artists, favTracks, sub ->
-        BrowseData(tracks, albums, artists, favTracks, sub.recent, sub.mostPlayed, sub.added, sub.playlists)
+        _counts,
+        libraryController.observeRecentlyPlayedTracks(limit = RECENT_ROW_LIMIT),
+        libraryController.observeRecentlyAddedTracks(limit = RECENT_ROW_LIMIT),
+        libraryController.observeAllPlaylists()
+    ) { (trackCount, favoriteCount), recent, added, playlists ->
+        BrowseData(trackCount, favoriteCount, recent, added, playlists)
     }
 
     private val _detailData = combine(
         _albumTracks,
         _artistAlbums,
-        _artistTracks,
-        _playlistTracks
-    ) { albumTracks, artistAlbums, artistTracks, playlistTracks ->
-        DetailData(albumTracks, artistAlbums, artistTracks, playlistTracks)
+        _artistTracks
+    ) { albumTracks, artistAlbums, artistTracks ->
+        DetailData(albumTracks, artistAlbums, artistTracks)
     }
 
     private data class SyncMeta(
         val isSyncing: Boolean,
-        val hasPermission: Boolean,
-        val userMessage: String?,
-        val isLikedSongsSelected: Boolean
+        val hasPermission: Boolean
     )
+
+    private val _syncMeta = combine(
+        _isSyncing,
+        _hasPermission
+    ) { isSyncing, hasPermission ->
+        SyncMeta(isSyncing, hasPermission)
+    }
 
     private data class MetaData(
         val filter: LibraryFilter,
         val sortOrder: TrackSortOrder,
         val isSyncing: Boolean,
-        val hasPermission: Boolean,
-        val userMessage: String?,
-        val isLikedSongsSelected: Boolean
+        val hasPermission: Boolean
     )
-
-    private val _syncMeta = combine(
-        _isSyncing,
-        _hasPermission,
-        _userMessage,
-        _isLikedSongsSelected
-    ) { isSyncing, hasPermission, userMessage, isLikedSongsSelected ->
-        SyncMeta(isSyncing, hasPermission, userMessage, isLikedSongsSelected)
-    }
 
     private val _metaData = combine(
         _selectedFilter,
         _trackSortOrder,
         _syncMeta
     ) { filter, sortOrder, sync ->
-        MetaData(filter, sortOrder, sync.isSyncing, sync.hasPermission, sync.userMessage, sync.isLikedSongsSelected)
+        MetaData(filter, sortOrder, sync.isSyncing, sync.hasPermission)
     }
 
     private val _navData = combine(
@@ -300,12 +276,11 @@ class LibraryViewModel(
     }
 
     /**
-     * Library content, sorted and filtered.
+     * Non-paged library state.
      *
      * ARCHITECTURE.md §3.2 and §5.4: playback state is deliberately absent from this combine, and
-     * the whole chain runs on [Dispatchers.Default]. Previously the facade's single state object —
-     * which ticked every 500 ms — was a source here, so the full-library sort below re-ran twice per
-     * second on the main dispatcher.
+     * the whole chain runs on [Dispatchers.Default]. There is no longer a full-library sort here —
+     * ordering moved into SQL — so this combine assembles counts and bounded rows only.
      */
     private val libraryContent = combine(
         _browseData,
@@ -313,48 +288,30 @@ class LibraryViewModel(
         _metaData,
         _navData
     ) { browse, detail, meta, nav ->
-        val sortedTracks = when (meta.sortOrder) {
-            TrackSortOrder.TITLE_ASC -> browse.tracks.sortedBy { it.title.lowercase() }
-            TrackSortOrder.RECENTLY_ADDED -> browse.tracks.sortedByDescending { it.dateAdded }
-            TrackSortOrder.MOST_PLAYED -> {
-                val rankMap = browse.mostPlayedTracks.withIndex().associate { (index, t) -> t.id to index }
-                val (played, unplayed) = browse.tracks.partition { rankMap.containsKey(it.id) }
-                val sortedPlayed = played.sortedBy { rankMap[it.id] }
-                val sortedUnplayed = unplayed.sortedBy { it.title.lowercase() }
-                sortedPlayed + sortedUnplayed
-            }
-        }
-
         LibraryUiState(
             selectedFilter = meta.filter,
             trackSortOrder = meta.sortOrder,
-            tracks = sortedTracks,
-            albums = browse.albums,
-            artists = browse.artists,
-            favoriteTracks = browse.favTracks,
+            trackCount = browse.trackCount,
+            favoriteCount = browse.favoriteCount,
             recentTracks = browse.recentTracks,
-            mostPlayedTracks = browse.mostPlayedTracks,
             recentlyAddedTracks = browse.recentlyAddedTracks,
             playlists = browse.playlists,
             albumTracks = detail.albumTracks,
             artistAlbums = detail.artistAlbums,
             artistTracks = detail.artistTracks,
             selectedPlaylist = nav.playlist,
-            playlistTracks = detail.playlistTracks,
             isSyncing = meta.isSyncing,
             hasPermission = meta.hasPermission,
-            userMessage = meta.userMessage,
             selectedAlbum = nav.album,
             selectedArtist = nav.artist,
-            isLikedSongsSelected = meta.isLikedSongsSelected,
             searchQuery = nav.query
         )
     }.flowOn(computeDispatcher)
 
     val uiState: StateFlow<LibraryUiState> = combine(
         libraryContent,
-        playbackFacade.nowPlaying
-            .map { it.currentTrack?.id to it.isPlaying }
+        playerController.nowPlaying
+            .map { it.currentTrack?.id?.value to it.isPlaying }
             .distinctUntilChanged()
     ) { content, (activeTrackId, isPlaying) ->
         content.copy(activeTrackId = activeTrackId, isPlaying = isPlaying)
@@ -365,15 +322,9 @@ class LibraryViewModel(
     )
 
     init {
-        viewModelScope.launch {
-            playbackFacade.oneShotEvents.collect { event ->
-                when (event) {
-                    is PlaybackEvent.TrackUnplayable -> {
-                        _userMessage.value = "Unable to play: ${event.trackTitle}"
-                    }
-                }
-            }
-        }
+        // No playback-error collector here: a screen ViewModel must not be the sole owner of
+        // globally relevant errors (Phase 6A §14). MainActivity forwards facade events to the
+        // UserMessageBus, which the root scaffold collects on every destination.
     }
 
     /**
@@ -386,21 +337,39 @@ class LibraryViewModel(
     fun selectFilter(filter: LibraryFilter) {
         _selectedFilter.value = filter
         savedStateHandle[KEY_FILTER] = filter.name
-        _isLikedSongsSelected.value = false
-        savedStateHandle[KEY_LIKED] = false
+    }
+
+    // ==================== Detail data, opened by destination id ====================
+    //
+    // The navigation stack owns WHERE the user is (typed ids only); this ViewModel owns loading the
+    // data a detail needs once MainActivity reports the destination. Selection state remains
+    // in-memory only: re-entering a detail after process death re-runs open*, so a stale object can
+    // never be restored.
+
+    /** Loads album detail for [albumId]; [onMissing] fires when the id no longer resolves. */
+    fun openAlbum(albumId: Long, onMissing: () -> Unit = {}) {
+        viewModelScope.launch {
+            val album = libraryController.getAlbumById(albumId)
+            if (album == null) onMissing() else _selectedAlbum.value = album
+        }
+    }
+
+    fun openArtist(artistId: Long, artistName: String) {
+        _selectedArtist.value = Artist(artistId = artistId, name = artistName)
+    }
+
+    fun openPlaylist(playlistId: Long, onMissing: () -> Unit = {}) {
+        viewModelScope.launch {
+            val playlist = libraryController.getPlaylist(playlistId)
+            if (playlist == null) onMissing() else _selectedPlaylist.value = playlist
+        }
+    }
+
+    /** Clears all detail selections when the navigation stack returns to a root. */
+    fun clearDetailState() {
         _selectedAlbum.value = null
         _selectedArtist.value = null
         _selectedPlaylist.value = null
-    }
-
-    fun selectLikedSongs() {
-        _isLikedSongsSelected.value = true
-        savedStateHandle[KEY_LIKED] = true
-    }
-
-    fun clearLikedSongs() {
-        _isLikedSongsSelected.value = false
-        savedStateHandle[KEY_LIKED] = false
     }
 
     fun selectAlbum(album: Album) {
@@ -431,9 +400,15 @@ class LibraryViewModel(
         viewModelScope.launch {
             _isSyncing.value = true
             try {
-                trackRepository.syncLibrary()
+                libraryController.syncLibrary()
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (e: Exception) {
+                // Typed at the boundary (ARCHITECTURE.md §5.1); the user hears it via the bus, the
+                // log keeps the cause.
+                val error = ErrorMapper.fromThrowable(e)
                 Timber.tag("LibraryViewModel").e(e, "Sync failed")
+                userMessageBus?.post(error)
             } finally {
                 _isSyncing.value = false
             }
@@ -445,29 +420,46 @@ class LibraryViewModel(
         savedStateHandle[KEY_QUERY] = query
     }
 
+    /**
+     * Plays a track in the context of the list it was tapped in.
+     *
+     * The queue is fetched from the database in the list's current SQL order and bounded by
+     * [TrackRepository.MAX_QUEUE_SIZE], because the visible list is paged: the loaded pages are not
+     * the whole context, and materialising the whole context to enqueue it is exactly what this phase
+     * removes. Playback starts immediately from a single-track queue, then the surrounding context
+     * replaces it — otherwise the user waits on a database read before hearing anything.
+     */
     fun playTrack(track: Track, contextQueue: List<Track>? = null) {
-        val queue = contextQueue ?: when (uiState.value.selectedFilter) {
-            LibraryFilter.FAVORITES -> uiState.value.favoriteTracks
-            else -> uiState.value.tracks
+        if (contextQueue != null) {
+            playerController.playTrack(track, contextQueue)
+            return
         }
-        playbackFacade.playTrack(track, queue)
+        val favoritesOnly = uiState.value.selectedFilter == LibraryFilter.FAVORITES
+        viewModelScope.launch {
+            val queue = libraryController.getQueueForContext(
+                query = _searchQuery.value,
+                sort = _trackSortOrder.value.toLibrarySort(),
+                favoritesOnly = favoritesOnly
+            )
+            playerController.playTrack(track, queue.ifEmpty { listOf(track) })
+        }
     }
 
     fun playAlbum(album: Album, shuffle: Boolean = false) {
         viewModelScope.launch {
-            val tracks = trackRepository.getTracksForAlbum(album.albumId)
+            val tracks = libraryController.getTracksForAlbum(album.albumId)
             if (tracks.isNotEmpty()) {
                 val queue = if (shuffle) LibraryPolicy.shuffled(tracks, shuffleSeed()) else tracks
-                playbackFacade.playQueue(queue, startIndex = 0)
+                playerController.playQueue(queue, startIndex = 0)
             }
         }
     }
 
     fun playArtist(artist: Artist) {
         viewModelScope.launch {
-            val tracks = trackRepository.getTracksForArtist(artist.name)
+            val tracks = libraryController.getTracksForArtist(artist.name)
             if (tracks.isNotEmpty()) {
-                playbackFacade.playQueue(tracks, startIndex = 0)
+                playerController.playQueue(tracks, startIndex = 0)
             }
         }
     }
@@ -477,11 +469,22 @@ class LibraryViewModel(
         savedStateHandle[KEY_SORT] = order.name
     }
 
+    /**
+     * Plays the favorites list.
+     *
+     * Read from the database rather than from UI state: the favorites list is paged, so UI state no
+     * longer holds it.
+     */
     fun playLikedSongs(shuffle: Boolean = false) {
-        val favs = uiState.value.favoriteTracks
-        if (favs.isNotEmpty()) {
-            val queue = if (shuffle) LibraryPolicy.shuffled(favs, shuffleSeed()) else favs
-            playbackFacade.playQueue(queue, startIndex = 0)
+        viewModelScope.launch {
+            val favs = libraryController.getQueueForContext(
+                query = _searchQuery.value,
+                favoritesOnly = true
+            )
+            if (favs.isNotEmpty()) {
+                val queue = if (shuffle) LibraryPolicy.shuffled(favs, shuffleSeed()) else favs
+                playerController.playQueue(queue, startIndex = 0)
+            }
         }
     }
 
@@ -489,7 +492,7 @@ class LibraryViewModel(
         val tracks = uiState.value.recentTracks
         if (tracks.isNotEmpty()) {
             val queue = if (shuffle) LibraryPolicy.shuffled(tracks, shuffleSeed()) else tracks
-            playbackFacade.playQueue(queue, startIndex = 0)
+            playerController.playQueue(queue, startIndex = 0)
         }
     }
 
@@ -497,23 +500,24 @@ class LibraryViewModel(
         val tracks = uiState.value.recentlyAddedTracks
         if (tracks.isNotEmpty()) {
             val queue = if (shuffle) LibraryPolicy.shuffled(tracks, shuffleSeed()) else tracks
-            playbackFacade.playQueue(queue, startIndex = 0)
+            playerController.playQueue(queue, startIndex = 0)
         }
     }
 
     fun playNext(track: Track) {
-        playbackFacade.playNext(track)
-        _userMessage.value = "Playing '${track.displayTitle}' next"
+        playerController.playNext(track)
+        userMessageBus?.post("Playing '${track.displayTitle}' next")
     }
 
     fun addToQueue(track: Track) {
-        playbackFacade.enqueue(track)
-        _userMessage.value = "Added '${track.displayTitle}' to queue"
+        playerController.enqueue(track)
+        userMessageBus?.post("Added '${track.displayTitle}' to queue")
     }
 
-    fun toggleFavorite(trackId: Long) {
+    /** Favorites by [Track]: a streamed track is upserted first, so the favorite cannot silently fail. */
+    fun toggleFavorite(track: Track) {
         viewModelScope.launch {
-            trackRepository.toggleFavorite(trackId)
+            libraryController.toggleFavorite(track)
         }
     }
 
@@ -523,14 +527,15 @@ class LibraryViewModel(
         _selectedPlaylist.value = playlist
     }
 
-    fun createPlaylist(name: String, trackIdToAppend: Long? = null) {
+    fun createPlaylist(name: String, trackToAppend: Track? = null) {
         viewModelScope.launch {
             val trimmed = name.trim().ifBlank { "New Playlist" }
-            val id = playlistRepository.createPlaylist(trimmed)
-            if (trackIdToAppend != null) {
-                playlistRepository.addTrackToPlaylist(id, trackIdToAppend)
+            val id = libraryController.createPlaylist(trimmed)
+            // addTrack, not addTrackToPlaylist: the track may be an unsaved provider result.
+            if (trackToAppend != null) {
+                libraryController.addTrack(id, trackToAppend)
             }
-            _userMessage.value = "Created playlist '$trimmed'"
+            userMessageBus?.post("Created playlist '$trimmed'")
         }
     }
 
@@ -538,11 +543,11 @@ class LibraryViewModel(
         viewModelScope.launch {
             val trimmed = newName.trim()
             if (trimmed.isNotBlank()) {
-                playlistRepository.renamePlaylist(playlistId, trimmed)
+                libraryController.renamePlaylist(playlistId, trimmed)
                 if (_selectedPlaylist.value?.id == playlistId) {
                     _selectedPlaylist.value = _selectedPlaylist.value?.copy(name = trimmed)
                 }
-                _userMessage.value = "Renamed playlist to '$trimmed'"
+                userMessageBus?.post("Renamed playlist to '$trimmed'")
             }
         }
     }
@@ -550,17 +555,17 @@ class LibraryViewModel(
     fun deletePlaylist(playlistId: Long) {
         viewModelScope.launch {
             val name = _selectedPlaylist.value?.name
-            playlistRepository.deletePlaylist(playlistId)
+            libraryController.deletePlaylist(playlistId)
             if (_selectedPlaylist.value?.id == playlistId) {
                 _selectedPlaylist.value = null
             }
-            _userMessage.value = if (name != null) "Deleted playlist '$name'" else "Deleted playlist"
+            userMessageBus?.post(if (name != null) "Deleted playlist '$name'" else "Deleted playlist")
         }
     }
 
-    fun addTrackToPlaylist(playlistId: Long, trackId: Long, trackTitle: String? = null, playlistName: String? = null) {
+    fun addTrackToPlaylist(playlistId: Long, track: Track, trackTitle: String? = null, playlistName: String? = null) {
         viewModelScope.launch {
-            val added = playlistRepository.addTrackToPlaylist(playlistId, trackId)
+            val added = libraryController.addTrack(playlistId, track)
             val msg = if (added) {
                 if (trackTitle != null && playlistName != null) {
                     "Added '$trackTitle' to $playlistName"
@@ -570,36 +575,53 @@ class LibraryViewModel(
             } else {
                 "Track already in playlist"
             }
-            _userMessage.value = msg
+            userMessageBus?.post(msg)
         }
     }
 
     fun removeTrackFromPlaylist(playlistId: Long, trackId: Long) {
         viewModelScope.launch {
-            playlistRepository.removeTrackFromPlaylist(playlistId, trackId)
-            _userMessage.value = "Removed track from playlist"
+            libraryController.removeTrackFromPlaylist(playlistId, trackId)
+            userMessageBus?.post("Removed track from playlist")
         }
     }
 
     fun reorderPlaylistTracks(playlistId: Long, orderedTrackIds: List<Long>) {
         viewModelScope.launch {
-            playlistRepository.reorderTracks(playlistId, orderedTrackIds)
+            libraryController.reorderTracks(playlistId, orderedTrackIds)
+        }
+    }
+
+    /**
+     * Moves one playlist member by [delta] positions.
+     *
+     * The full ordered id list comes from the database rather than from the visible page, so a move
+     * near a page boundary still produces a correct global order. The screen only knows the track it
+     * moved and the direction.
+     */
+    fun movePlaylistTrack(playlistId: Long, trackId: Long, delta: Int) {
+        if (delta == 0) return
+        viewModelScope.launch {
+            val ids = libraryController.getOrderedTrackIds(playlistId).toMutableList()
+            val from = ids.indexOf(trackId)
+            if (from < 0) return@launch
+            val to = (from + delta).coerceIn(0, ids.lastIndex)
+            if (to == from) return@launch
+            ids.removeAt(from)
+            ids.add(to, trackId)
+            libraryController.reorderTracks(playlistId, ids)
         }
     }
 
     fun playPlaylist(playlist: Playlist, shuffle: Boolean = false, startIndex: Int = 0) {
         viewModelScope.launch {
-            val tracks = playlistRepository.getTracksForPlaylist(playlist.id)
+            val tracks = libraryController.getTracksForPlaylist(playlist.id)
             if (tracks.isNotEmpty()) {
                 val queue = if (shuffle) LibraryPolicy.shuffled(tracks, shuffleSeed()) else tracks
                 val start = if (shuffle) 0 else startIndex.coerceIn(0, queue.size - 1)
-                playbackFacade.playQueue(queue, startIndex = start)
+                playerController.playQueue(queue, startIndex = start)
             }
         }
-    }
-
-    fun dismissUserMessage() {
-        _userMessage.value = null
     }
 
     /** Fresh seed per user-initiated shuffle; never used inside a flow transform. */
@@ -608,7 +630,15 @@ class LibraryViewModel(
     private companion object {
         const val KEY_FILTER = "library.filter"
         const val KEY_SORT = "library.sortOrder"
-        const val KEY_LIKED = "library.likedSelected"
         const val KEY_QUERY = "library.query"
+
+        /**
+         * Query debounce for the database-backed lists. Long enough to collapse a typing burst into
+         * one query, short enough that the list feels live.
+         */
+        const val SEARCH_DEBOUNCE_MS = 250L
+
+        /** Recent rows are horizontal carousels; more than this is never on screen. */
+        const val RECENT_ROW_LIMIT = 50
     }
 }

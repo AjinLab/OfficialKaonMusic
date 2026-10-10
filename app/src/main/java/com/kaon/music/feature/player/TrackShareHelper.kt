@@ -1,6 +1,7 @@
 package com.kaon.music.feature.player
 
 import android.content.Intent
+import com.kaon.music.core.data.model.ProviderId
 import com.kaon.music.core.data.model.Track
 
 /**
@@ -9,8 +10,9 @@ import com.kaon.music.core.data.model.Track
 object TrackShareHelper {
 
     fun createShareText(track: Track): String {
-        return if (track.source == "YOUTUBE" && !track.youtubeVideoId.isNullOrBlank()) {
-            "Now listening to: ${track.displayTitle} by ${track.displayArtist}\nhttps://www.youtube.com/watch?v=${track.youtubeVideoId}"
+        val videoId = track.externalId?.takeIf { track.provider == ProviderId.YOUTUBE && it.isNotBlank() }
+        return if (videoId != null) {
+            "Now listening to: ${track.displayTitle} by ${track.displayArtist}\nhttps://www.youtube.com/watch?v=$videoId"
         } else {
             "Now listening to: ${track.displayTitle} by ${track.displayArtist} on Kaon Music"
         }

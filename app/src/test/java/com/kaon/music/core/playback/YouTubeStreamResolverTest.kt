@@ -1,8 +1,8 @@
 package com.kaon.music.core.playback
 
 import android.net.ConnectivityManager
-import com.kaon.music.core.online.AudioQuality
-import com.kaon.music.core.online.AudioType
+import com.kaon.music.core.extraction.model.AudioQuality
+import com.kaon.music.core.extraction.model.AudioType
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -89,10 +89,10 @@ class YouTubeStreamResolverTest {
         val extraction = FakeExtractionApi { streamData(url = expiryUrl) }
         YouTubeStreamResolver.resetForTesting(extraction = extraction, clockFn = { now })
 
-        assertTrue(YouTubeStreamResolver.resolveStreamData("vid").isSuccess)
+        assertTrue(YouTubeStreamResolver.resolveStreamData("vid_expiry").isSuccess)
         now += 3_545_000L // past the parsed CDN expiry (expire - 60s safety buffer)
 
-        assertTrue(YouTubeStreamResolver.resolveStreamData("vid").isSuccess)
+        assertTrue(YouTubeStreamResolver.resolveStreamData("vid_expiry").isSuccess)
         assertEquals(2, extraction.calls)
     }
 
@@ -314,5 +314,102 @@ class YouTubeStreamResolverTest {
         assertFalse(YouTubeStreamResolver.isTransientFailure(IllegalStateException("wifi only")))
         assertFalse(YouTubeStreamResolver.isTransientFailure(StreamResolutionException("no stream")))
         assertFalse(YouTubeStreamResolver.isTransientFailure(NullPointerException("bug")))
+    }
+
+    @Test
+    fun `wifi-only gate blocks a warm cache entry on metered`() = runTest {
+        val extraction = FakeExtractionApi { streamData() }
+        YouTubeStreamResolver.resetForTesting(extraction = extraction, clockFn = { now })
+        YouTubeStreamResolver.activeNetworkUnmetered = { true }
+
+        // Warm the cache while unmetered, then move to metered without clearing it.
+        assertTrue(YouTubeStreamResolver.resolveStreamData("vid", wifiOnly = true).isSuccess)
+        YouTubeStreamResolver.activeNetworkUnmetered = { false }
+
+        val blocked = YouTubeStreamResolver.resolveStreamData("vid", wifiOnly = true)
+
+        assertTrue(blocked.isFailure)
+        assertTrue(blocked.exceptionOrNull() is IllegalStateException)
+        assertEquals("a warm entry must not bypass the gate", 1, extraction.calls)
+        assertEquals(1L, ResolutionMetrics.count(ResolutionMetrics.WIFI_BLOCKED))
+    }
+
+    @Test
+    fun `wifi-only gate blocks before any extraction attempt`() = runTest {
+        val extraction = FakeExtractionApi { streamData() }
+        YouTubeStreamResolver.resetForTesting(extraction = extraction, clockFn = { now })
+        YouTubeStreamResolver.activeNetworkUnmetered = { false }
+
+        val blocked = YouTubeStreamResolver.resolveStreamData("vid", wifiOnly = true)
+
+        assertTrue(blocked.isFailure)
+        assertEquals("a gated track must not spend the rate-limit window", 0, extraction.calls)
+    }
+
+    @Test
+    fun `wifi-only gate stays open when there is no connectivity manager`() = runTest {
+        val extraction = FakeExtractionApi { streamData() }
+        YouTubeStreamResolver.resetForTesting(extraction = extraction, clockFn = { now })
+        // Null means the gate is unenforceable, not that the network is metered: blocking all
+        // streaming because the connectivity stack is unavailable would strand offline-capable users.
+        YouTubeStreamResolver.activeNetworkUnmetered = { null }
+
+        assertTrue(YouTubeStreamResolver.resolveStreamData("vid", wifiOnly = true).isSuccess)
+        assertEquals(1, extraction.calls)
+    }
+
+    @Test
+    fun `successful extractions are counted per client`() = runTest {
+        val extraction = FakeExtractionApi { streamData(clientName = "VISIONOS_0_1") }
+        YouTubeStreamResolver.resetForTesting(extraction = extraction, clockFn = { now })
+
+        assertTrue(YouTubeStreamResolver.resolveStreamData("a").isSuccess)
+        assertTrue(YouTubeStreamResolver.resolveStreamData("b").isSuccess)
+        assertTrue(YouTubeStreamResolver.resolveStreamData("a").isSuccess) // warm serve: no new extraction
+
+        assertEquals(2L, ResolutionMetrics.count("client:VISIONOS_0_1"))
+        assertEquals(2L, ResolutionMetrics.clientCounts().values.sum())
+    }
+
+    @Test
+    fun `extraction aborted by an innertube session change is retried`() = runTest {
+        var attempt = 0
+        val extraction = FakeExtractionApi {
+            attempt++
+            if (attempt == 1) {
+                // What innertubex's session guard throws when the InnerTube session advances
+                // mid-extraction (a cold-start bootstrap racing the first resolve). Our own job is
+                // still active, so the resolver must treat it as transient and retry.
+                throw kotlinx.coroutines.CancellationException("InnerTube session changed")
+            }
+            streamData()
+        }
+        YouTubeStreamResolver.resetForTesting(extraction = extraction, clockFn = { now })
+
+        val result = YouTubeStreamResolver.resolveStreamData("vid")
+
+        assertTrue("a session-change abort must recover on the retry", result.isSuccess)
+        assertEquals(2, extraction.calls)
+    }
+
+    @Test
+    fun `caller cancellation during extraction still propagates as cancellation`() = runBlocking {
+        val entered = CountDownLatch(1)
+        val gate = CompletableDeferred<ResolvedStreamData>()
+        val extraction = FakeExtractionApi {
+            entered.countDown()
+            gate.await()
+        }
+        YouTubeStreamResolver.resetForTesting(extraction = extraction, clockFn = { now })
+
+        val job = launch(Dispatchers.IO) { YouTubeStreamResolver.resolveStreamData("vid") }
+        assertTrue(entered.await(5, TimeUnit.SECONDS))
+        job.cancel()
+        job.join()
+
+        // The waiter is decoupled from the shared work; releasing the gate must not resurrect the
+        // cancelled caller, and the work itself ran exactly once (not retried as a session change).
+        gate.complete(streamData())
+        assertEquals(1, extraction.calls)
     }
 }

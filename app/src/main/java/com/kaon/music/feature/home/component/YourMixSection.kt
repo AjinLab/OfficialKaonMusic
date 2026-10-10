@@ -17,7 +17,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.TrendingUp
-import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FiberNew
 import androidx.compose.material.icons.filled.PlayArrow
@@ -34,17 +33,20 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.kaon.music.core.data.model.Track
 import com.kaon.music.core.designsystem.theme.KaonCardDark
 import com.kaon.music.core.designsystem.theme.KaonHeartRed
+import com.kaon.music.core.designsystem.theme.KaonOnAccent
 import com.kaon.music.core.designsystem.theme.KaonPrimary
+import com.kaon.music.core.designsystem.theme.KaonPrimaryVariant
+import com.kaon.music.core.designsystem.theme.KaonSurfaceHighlight
 import com.kaon.music.core.designsystem.theme.KaonTextPrimary
 import com.kaon.music.core.designsystem.theme.KaonTextSecondary
 
 /**
- * Dynamic "Your Mix" and Smart Mixes section.
- * Backed by real play_events and Room query aggregations.
+ * "Your Mix" — the home tab's hero. The pool is a radial wash of the active accent over a dark
+ * card, so the app's one big gesture plays in the palette the user picked; the quick-mix chips
+ * stay quiet in surface tones.
  */
 @Composable
 fun YourMixSection(
@@ -71,27 +73,27 @@ fun YourMixSection(
             .padding(horizontal = 20.dp)
     ) {
         Text(
-            text = "Made For You",
-            style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
-            color = KaonTextPrimary
+            text = "Made for you",
+            style = MaterialTheme.typography.titleLarge,
+            color = MaterialTheme.colorScheme.onBackground
         )
 
         Spacer(modifier = Modifier.height(14.dp))
 
-        // Dynamic Hero Card: "Your Mix"
+        // Hero Card: "Your Mix" — accent pool over a dark base.
         Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(180.dp)
-                .clip(RoundedCornerShape(20.dp))
+                .clip(RoundedCornerShape(22.dp))
                 .background(
                     Brush.radialGradient(
                         colors = listOf(
-                            Color(0xFF6B1824),
-                            Color(0xFF330D13),
+                            KaonPrimary.copy(alpha = 0.55f),
+                            KaonPrimaryVariant.copy(alpha = 0.28f),
                             KaonCardDark
                         ),
-                        radius = 600f
+                        radius = 700f
                     )
                 )
                 .clickable(onClick = onPlayYourMix)
@@ -106,23 +108,11 @@ fun YourMixSection(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            imageVector = Icons.Default.AutoAwesome,
-                            contentDescription = null,
-                            tint = KaonPrimary,
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(
-                            text = "SMART MIX",
-                            style = MaterialTheme.typography.labelSmall.copy(
-                                fontWeight = FontWeight.Bold,
-                                letterSpacing = 1.2.sp
-                            ),
-                            color = KaonPrimary
-                        )
-                    }
+                    Text(
+                        text = "Smart mix",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = KaonTextSecondary
+                    )
 
                     Surface(
                         modifier = Modifier.size(44.dp),
@@ -132,7 +122,7 @@ fun YourMixSection(
                         Icon(
                             imageVector = Icons.Default.PlayArrow,
                             contentDescription = "Play Your Mix",
-                            tint = Color.Black,
+                            tint = KaonOnAccent,
                             modifier = Modifier.padding(10.dp)
                         )
                     }
@@ -141,16 +131,13 @@ fun YourMixSection(
                 Column {
                     Text(
                         text = "Your Mix",
-                        style = MaterialTheme.typography.headlineMedium.copy(
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 28.sp
-                        ),
+                        style = MaterialTheme.typography.headlineLarge,
                         color = KaonTextPrimary
                     )
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
-                        text = "${yourMixTracks.size} tracks • $durationText",
-                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
+                        text = "${yourMixTracks.size} tracks — $durationText",
+                        style = MaterialTheme.typography.bodyMedium,
                         color = KaonTextSecondary
                     )
                 }
@@ -159,7 +146,7 @@ fun YourMixSection(
 
         Spacer(modifier = Modifier.height(14.dp))
 
-        // Horizontal Quick Mix Chips
+        // Horizontal Quick Mix Chips — quiet surface tiles with an accent-coloured icon each.
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(10.dp)
@@ -169,10 +156,7 @@ fun YourMixSection(
                     title = "Heavy Rotation",
                     subtitle = "$heavyRotationCount tracks",
                     icon = Icons.AutoMirrored.Filled.TrendingUp,
-                    accentColor = Color(0xFFFF8A65),
-                    gradient = Brush.verticalGradient(
-                        listOf(Color(0xFF2C1E1B), Color(0xFF191210))
-                    ),
+                    iconTint = KaonPrimary,
                     onClick = onPlayHeavyRotation,
                     modifier = Modifier.weight(1f)
                 )
@@ -183,10 +167,7 @@ fun YourMixSection(
                     title = "Recently Added",
                     subtitle = "$recentlyAddedCount tracks",
                     icon = Icons.Default.FiberNew,
-                    accentColor = Color(0xFF64B5F6),
-                    gradient = Brush.verticalGradient(
-                        listOf(Color(0xFF162330), Color(0xFF0F151C))
-                    ),
+                    iconTint = KaonPrimaryVariant,
                     onClick = onPlayRecentlyAdded,
                     modifier = Modifier.weight(1f)
                 )
@@ -197,10 +178,7 @@ fun YourMixSection(
                     title = "Favorites",
                     subtitle = "$favoriteCount songs",
                     icon = Icons.Default.Favorite,
-                    accentColor = KaonHeartRed,
-                    gradient = Brush.verticalGradient(
-                        listOf(Color(0xFF2E1720), Color(0xFF1A0E13))
-                    ),
+                    iconTint = KaonHeartRed,
                     onClick = onPlayFavorites,
                     modifier = Modifier.weight(1f)
                 )
@@ -214,16 +192,15 @@ private fun QuickMixCard(
     title: String,
     subtitle: String,
     icon: ImageVector,
-    accentColor: Color,
-    gradient: Brush,
+    iconTint: Color,
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     Box(
         modifier = modifier
             .height(110.dp)
-            .clip(RoundedCornerShape(14.dp))
-            .background(gradient)
+            .clip(RoundedCornerShape(16.dp))
+            .background(KaonSurfaceHighlight)
             .clickable(onClick = onClick)
             .padding(12.dp)
     ) {
@@ -234,14 +211,14 @@ private fun QuickMixCard(
             Icon(
                 imageVector = icon,
                 contentDescription = null,
-                tint = accentColor,
+                tint = iconTint,
                 modifier = Modifier.size(20.dp)
             )
 
             Column {
                 Text(
                     text = title,
-                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                    style = MaterialTheme.typography.titleSmall,
                     color = KaonTextPrimary,
                     maxLines = 1
                 )
@@ -262,8 +239,8 @@ private fun formatMixDuration(durationMs: Long): String {
     val hours = totalMinutes / 60
     val minutes = totalMinutes % 60
     return if (hours > 0) {
-        "${hours} hr ${minutes} min"
+        "$hours hr $minutes min"
     } else {
-        "${minutes} min"
+        "$minutes min"
     }
 }

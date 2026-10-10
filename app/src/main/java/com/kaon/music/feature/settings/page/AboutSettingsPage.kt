@@ -1,6 +1,5 @@
 package com.kaon.music.feature.settings.page
 
-import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -35,7 +34,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.kaon.music.core.designsystem.theme.KaonAccentPink
 import com.kaon.music.core.designsystem.theme.KaonBackground
+import com.kaon.music.core.designsystem.theme.KaonSecondary
 import com.kaon.music.core.designsystem.theme.KaonPrimary
 import com.kaon.music.core.designsystem.theme.KaonSurfaceElevated
 import com.kaon.music.core.designsystem.theme.KaonTextPrimary
@@ -47,7 +48,6 @@ fun AboutSettingsPage(
     bottomPadding: PaddingValues,
     modifier: Modifier = Modifier
 ) {
-    BackHandler(onBack = onBack)
 
     Column(
         modifier = modifier
@@ -98,9 +98,7 @@ fun AboutSettingsPage(
                                 .size(80.dp)
                                 .clip(CircleShape)
                                 .background(
-                                    Brush.linearGradient(
-                                        listOf(KaonPrimary, Color(0xFF8B5CF6), Color(0xFFEC4899))
-                                    )
+                                    Brush.linearGradient(listOf(KaonPrimary, KaonSecondary, KaonAccentPink))
                                 ),
                             contentAlignment = Alignment.Center
                         ) {

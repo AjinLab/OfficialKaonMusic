@@ -2,17 +2,20 @@ package com.kaon.music.core.playback
 
 import android.content.Context
 import android.net.ConnectivityManager
-import com.kaon.music.core.logging.Redact
-import com.kaon.music.core.online.AudioQuality
-import com.kaon.music.core.online.AudioType
-import com.kaon.music.core.online.PlaybackData
-import com.kaon.music.core.online.YouTubeStreamExtractor
+import com.kaon.music.core.extraction.logging.Redact
+import com.kaon.music.core.extraction.model.AudioQuality
+import com.kaon.music.core.extraction.model.AudioType
+import com.kaon.music.core.extraction.PlaybackData
+import com.kaon.music.core.model.MediaLocator
+import com.kaon.music.core.extraction.YouTubeStreamExtractor
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import timber.log.Timber
@@ -30,14 +33,6 @@ class RateLimitException(message: String) : Exception(message)
  * concurrency that the track the user just tapped needs. WAVE hit exactly this contention and
  * responded by disabling pre-resolution outright; Kaon bounds it instead.
  */
-enum class ResolvePurpose {
-    /** The user is waiting. Always allowed, never yields. */
-    PLAYBACK,
-
-    /** Speculative warm-up for the next queue item. Yields to [PLAYBACK] and is skipped under load. */
-    PREFETCH
-}
-
 /** Thrown when stream resolution times out or fails permanently. */
 class StreamResolutionException(message: String, cause: Throwable? = null) : Exception(message, cause)
 
@@ -123,6 +118,29 @@ object YouTubeStreamResolver {
     internal var clock: () -> Long = System::currentTimeMillis
 
     /**
+     * Whether the active network is unmetered (Wi-Fi or Ethernet): true, false, or null when there
+     * is no connectivity manager to ask (the gate is then not enforceable and stays open — the
+     * original gate's semantics). Injectable for JVM tests, which cannot construct a
+     * [ConnectivityManager].
+     */
+    private val defaultUnmeteredCheck: () -> Boolean? = {
+        val cm = connectivityManagerProvider()
+        if (cm == null) {
+            null
+        } else {
+            val activeNetwork = cm.activeNetwork
+            val caps = if (activeNetwork != null) cm.getNetworkCapabilities(activeNetwork) else null
+            caps != null && (
+                caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) ||
+                    caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_ETHERNET)
+                )
+        }
+    }
+
+    @Volatile
+    internal var activeNetworkUnmetered: () -> Boolean? = defaultUnmeteredCheck
+
+    /**
      * Supplies the [ConnectivityManager] for metered-network checks and the Wi-Fi gate.
      *
      * Injected from [com.kaon.music.app.di.AppContainer] rather than read off a global. The resolver
@@ -164,6 +182,7 @@ object YouTubeStreamResolver {
         extractionApi = extraction
         clock = clockFn
         connectivityManagerProvider = connectivity
+        activeNetworkUnmetered = defaultUnmeteredCheck
         cache.clear()
         rateLimiter.reset(rateLimiterMax)
         foregroundInFlight.set(0)
@@ -204,6 +223,17 @@ object YouTubeStreamResolver {
         val trimmedId = videoId.trim()
         if (trimmedId.isBlank()) return Result.failure(IllegalArgumentException("Invalid videoId: blank"))
 
+        // Enforce the Wi-Fi gate before the cache: serving a cached URL is still network streaming,
+        // so the gate must not be bypassed by a warm entry. (The gate used to live inside the
+        // coalesced pipeline, which the fast-path lookup below skipped entirely.)
+        if (wifiOnly && activeNetworkUnmetered() == false) {
+            Timber.tag("resolve").w("Streaming blocked: Wi-Fi only enabled but device is not on Wi-Fi")
+            ResolutionMetrics.record(ResolutionMetrics.WIFI_BLOCKED, 0L)
+            return Result.failure(
+                IllegalStateException("Wi-Fi only streaming is enabled in settings, but device is not connected to Wi-Fi.")
+            )
+        }
+
         // Key excludes purpose on purpose: a prefetch and a playback request for the same track and
         // options must coalesce onto one extraction, and the prefetch result must be reusable by the
         // subsequent playback request.
@@ -218,7 +248,7 @@ object YouTubeStreamResolver {
 
         if (purpose == ResolvePurpose.PLAYBACK) foregroundInFlight.incrementAndGet()
         return try {
-            coalescer.execute(key) { resolveUncoalesced(trimmedId, quality, audioType, wifiOnly, purpose) }
+            coalescer.execute(key) { resolveUncoalesced(trimmedId, quality, audioType, purpose) }
         } catch (ce: CancellationException) {
             throw ce
         } catch (t: Throwable) {
@@ -234,22 +264,36 @@ object YouTubeStreamResolver {
     /**
      * Pre-resolves the upcoming queue item.
      *
-     * Must use the same quality/audioType the foreground playback will request, or the warm entry is
-     * not a cache hit — the key is option-suffixed.
+     * Must use the same quality/audioType/wifiOnly the foreground playback will request, or the warm
+     * entry is not a cache hit — the key is option-suffixed, and the gate would either run here with
+     * wrong facts or (worse) be skipped while playback is blocked on metered.
      */
     suspend fun preResolve(
         videoId: String?,
         quality: AudioQuality = AudioQuality.AUTO,
-        audioType: AudioType = AudioType.AUTO
+        audioType: AudioType = AudioType.AUTO,
+        wifiOnly: Boolean = false
     ) {
         if (videoId.isNullOrBlank()) return
         val trimmedId = videoId.trim()
-        if (cache.get(cacheKey(trimmedId, quality, audioType)) != null) return
+        if (cache.get(cacheKey(trimmedId, quality, audioType)) != null) {
+            ResolutionMetrics.record(ResolutionMetrics.PREFETCH_WARM, 0L)
+            return
+        }
+
+        // A prefetch must respect the same Wi-Fi-only gate as the playback it is warming for;
+        // otherwise it silently performs the exact network streaming the user opted out of.
+        if (wifiOnly && activeNetworkUnmetered() == false) {
+            Timber.tag("resolve").d("Pre-resolve skipped for $trimmedId: Wi-Fi-only gate active")
+            ResolutionMetrics.record(ResolutionMetrics.PREFETCH_SKIPPED_WIFI_GATE, 0L)
+            return
+        }
 
         // Foreground priority: never start speculative work while the user is waiting for a track.
         // The next transition triggers pre-resolution again, so skipping here loses nothing.
         if (foregroundInFlight.get() > 0) {
             Timber.tag("resolve").d("Pre-resolve skipped for $trimmedId: foreground resolution in flight")
+            ResolutionMetrics.record(ResolutionMetrics.PREFETCH_SKIPPED_FOREGROUND, 0L)
             return
         }
 
@@ -257,15 +301,24 @@ object YouTubeStreamResolver {
         // quota on speculation is how a prefetch ends up rejecting the track the user then taps.
         if (!rateLimiter.hasHeadroom(PREFETCH_QUOTA_HEADROOM)) {
             Timber.tag("resolve").d("Pre-resolve skipped for $trimmedId: rate-limit headroom exhausted")
+            ResolutionMetrics.record(ResolutionMetrics.PREFETCH_SKIPPED_HEADROOM, 0L)
             return
         }
 
-        try {
-            resolveStreamData(trimmedId, quality, audioType, purpose = ResolvePurpose.PREFETCH)
+        // Extraction failures usually arrive as a Result value (the pipeline models failures in its
+        // return type), so the outcome is read from the result; the catch only covers wiring errors.
+        val result = try {
+            resolveStreamData(trimmedId, quality, audioType, wifiOnly, purpose = ResolvePurpose.PREFETCH)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
+            ResolutionMetrics.record(ResolutionMetrics.PREFETCH_FAILED, 0L)
             Timber.tag("resolve").d("Background pre-resolve ignored error: ${e.message}")
+            return
+        }
+        if (result.isFailure) {
+            ResolutionMetrics.record(ResolutionMetrics.PREFETCH_FAILED, 0L)
+            Timber.tag("resolve").d("Background pre-resolve ignored failure: ${result.exceptionOrNull()?.message}")
         }
     }
 
@@ -283,29 +336,10 @@ object YouTubeStreamResolver {
         videoId: String,
         quality: AudioQuality,
         audioType: AudioType,
-        wifiOnly: Boolean,
         purpose: ResolvePurpose
     ): Result<ResolvedStreamData> = withContext(Dispatchers.IO) {
         val trace = ResolutionTrace(videoId, clock)
         val cm = connectivityManagerProvider()
-
-        // Enforce the Wi-Fi gate before the cache: serving a cached URL is still network streaming,
-        // so the gate must not be bypassed by a warm entry.
-        if (wifiOnly && cm != null) {
-            val activeNetwork = cm.activeNetwork
-            val caps = if (activeNetwork != null) cm.getNetworkCapabilities(activeNetwork) else null
-            val isWifiOrEthernet = caps != null && (
-                caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) ||
-                    caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_ETHERNET)
-                )
-            if (!isWifiOrEthernet) {
-                Timber.tag("resolve").w("Streaming blocked: Wi-Fi only enabled but device is not on Wi-Fi")
-                trace.log(ResolutionMetrics.WIFI_BLOCKED)
-                return@withContext Result.failure(
-                    IllegalStateException("Wi-Fi only streaming is enabled in settings, but device is not connected to Wi-Fi.")
-                )
-            }
-        }
 
         val key = cacheKey(videoId, quality, audioType)
         val deadlineMs = clock() + RESOLUTION_BUDGET_MS
@@ -339,6 +373,11 @@ object YouTubeStreamResolver {
 
         val expiresAtMs = calculateExpiryTimestampMs(resolved.url, resolved.expiresInSeconds)
         cache.put(key, resolved, expiresAtMs, generation)
+        // Fallback-frequency visibility: innertubex owns client rotation and its health monitor is
+        // invisible from here, so the only observable is which client the successful extraction
+        // came from. A histogram dominated by non-VISIONOS clients means the cheap-first catalog
+        // (ARCHITECTURE.md §7.1) has regressed even when every resolve still succeeds.
+        ResolutionMetrics.recordClient(resolved.clientName)
         trace.log(
             outcome = if (attempts > 1) ResolutionMetrics.EXTRACTED_RETRY else ResolutionMetrics.EXTRACTED,
             clientName = resolved.clientName
@@ -378,7 +417,15 @@ object YouTubeStreamResolver {
                 lastFailure = StreamResolutionException("Stream extraction timed out for $videoId", t)
                 break
             } catch (ce: CancellationException) {
-                throw ce
+                // A cancellation that left our own job running did not come from the caller (the
+                // coalescer decouples waiters from the shared work) or from the withTimeout above:
+                // innertubex's session guard aborts in-flight extractions when the InnerTube
+                // session advances (a cold-start bootstrap racing the first resolve — observed on
+                // device as "InnerTube session changed"). Under the new session the retry
+                // succeeds, so this takes the one bounded retry. Only a scope teardown (our job
+                // already cancelled) keeps propagating.
+                if (!currentCoroutineContext().isActive) throw ce
+                lastFailure = StreamResolutionException("Stream extraction aborted by a session change for $videoId", ce)
             } catch (t: Throwable) {
                 lastFailure = t
                 if (t is RateLimitException) break
@@ -495,5 +542,75 @@ internal class SlidingWindowRateLimiter(
         require(maxRequests > 0) { "maxRequests must be greater than zero" }
         this.maxRequests = maxRequests
         timestamps.clear()
+    }
+}
+
+
+/**
+ * The [StreamResolver] port bound to the proven object implementation.
+ *
+ * Phase 5's boundary work did not rewrite the resolver: the coalescer, rate limiter, generation-
+ * guarded cache, session-change retry and VISIONOS-first ladder are all validated (ARCHITECTURE.md
+ * §7). This adapter is the seam the contract requires, and the quality mapping is the only policy
+ * translation — one function, from [StreamQuality] to the extractor's [AudioQuality].
+ *
+ * The deadlocks-free note on purpose: `resolve` never blocks; the loader-thread bridge in
+ * `KaonPlaybackService` remains the single production `runBlocking`.
+ */
+class KaonStreamResolver : StreamResolver {
+
+    override suspend fun resolve(request: StreamRequest): Result<ResolvedStream> {
+        val result = YouTubeStreamResolver.resolveStreamData(
+            videoId = request.locator.externalId,
+            quality = request.quality.toExtractorQuality(),
+            audioType = request.audioType,
+            wifiOnly = request.wifiOnly,
+            purpose = request.purpose.toResolverPurpose()
+        )
+        return result.map { resolved -> resolved.toResolvedStream() }
+    }
+
+    override suspend fun prewarm(
+        locator: MediaLocator.Remote,
+        quality: StreamQuality,
+        audioType: AudioType
+    ) {
+        YouTubeStreamResolver.preResolve(
+            videoId = locator.externalId,
+            quality = quality.toExtractorQuality(),
+            audioType = audioType
+        )
+    }
+
+    override fun invalidate(locator: MediaLocator.Remote) {
+        YouTubeStreamResolver.invalidate(locator.externalId)
+    }
+
+    private fun StreamQuality.toExtractorQuality(): AudioQuality = when (this) {
+        StreamQuality.AUTO -> AudioQuality.AUTO
+        StreamQuality.LOW -> AudioQuality.LOW
+        StreamQuality.HIGH -> AudioQuality.HIGH
+    }
+
+    private fun ResolvePurpose.toResolverPurpose(): ResolvePurpose = when (this) {
+        ResolvePurpose.PLAYBACK -> ResolvePurpose.PLAYBACK
+        ResolvePurpose.PREFETCH -> ResolvePurpose.PREFETCH
+        ResolvePurpose.DOWNLOAD -> ResolvePurpose.PLAYBACK
+    }
+
+    private fun ResolvedStreamData.toResolvedStream(): ResolvedStream {
+        // Absolute expiry per ARCHITECTURE.md §8: capture time + reported TTL. The cache layer's
+        // expire-parameter parsing already feeds its own absolute expiry internally; this is the
+        // value the contract exposes, floored at "now" so a short TTL can never go negative.
+        val expiresAt = System.currentTimeMillis() + expiresInSeconds.coerceAtLeast(0) * 1000L
+        return ResolvedStream(
+            url = url,
+            headers = headers,
+            clientName = clientName,
+            expiresAtEpochMs = expiresAt,
+            requireBoundedRange = requireBoundedRange,
+            rangeChunkSizeBytes = rangeChunkSizeBytes,
+            useRangeChunks = useRangeChunks
+        )
     }
 }

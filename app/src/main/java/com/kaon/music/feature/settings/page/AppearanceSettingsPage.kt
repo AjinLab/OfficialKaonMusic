@@ -1,6 +1,5 @@
 package com.kaon.music.feature.settings.page
 
-import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -40,7 +39,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.kaon.music.core.data.repository.UserSettings
+import com.kaon.music.core.model.UserSettings
+import com.kaon.music.core.designsystem.theme.AccentSwatches
 import com.kaon.music.core.designsystem.theme.KaonBackground
 import com.kaon.music.core.designsystem.theme.KaonPrimary
 import com.kaon.music.core.designsystem.theme.KaonSurfaceElevated
@@ -58,7 +58,6 @@ fun AppearanceSettingsPage(
     bottomPadding: PaddingValues,
     modifier: Modifier = Modifier
 ) {
-    BackHandler(onBack = onBack)
 
     Column(
         modifier = modifier
@@ -168,15 +167,13 @@ fun AppearanceSettingsPage(
                             horizontalArrangement = Arrangement.SpaceEvenly,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            val colors = listOf(
-                                "CORAL" to ("Coral Blush" to Color(0xFFF0A89C)),
-                                "VIOLET" to ("Violet Glow" to Color(0xFF8B5CF6)),
-                                "BLUE" to ("Ocean Blue" to Color(0xFF38BDF8)),
-                                "EMERALD" to ("Emerald Mint" to Color(0xFF34D399))
-                            )
+                            // The presets are the theme registry itself — swatch colours come
+                            // from Color.kt so this page can never drift from the real accents.
+                            val colors = AccentSwatches.map { swatch ->
+                                Triple(swatch.key, swatch.name, swatch.accent)
+                            }
 
-                            colors.forEach { (colorKey, data) ->
-                                val (name, color) = data
+                            colors.forEach { (colorKey, name, color) ->
                                 val isSelected = settings.accentColor == colorKey
 
                                 Column(

@@ -20,10 +20,17 @@ import com.kaon.music.core.data.db.entity.TrackEntity
 /**
  * Main Room Database for Kaon Music.
  *
- * Separation of Concerns (from ARCHITECTURE_ATTRIBUTED.md §7):
- * - Derived tables: [TrackEntity] (rebuildable from MediaStore).
- * - User-owned tables: [FavoriteTrackEntity], [PlayEventEntity], [PlaylistEntity], [PlaylistTrackEntity] (migrations are sacred).
- * - Operational tables: [QueueSnapshotEntity] (best-effort restoration).
+ * Separation of Concerns (ARCHITECTURE.md §6):
+ * - Derived table: [TrackEntity] — rebuildable from MediaStore for local rows.
+ * - User-owned tables: [FavoriteTrackEntity], [PlayEventEntity], [PlaylistEntity], [PlaylistTrackEntity].
+ *   None of them cascades from `tracks` any more: user data must not be destroyed because a file moved.
+ * - Operational table: [QueueSnapshotEntity] — best-effort restoration.
+ *
+ * Migrations up to v7 are index/column additions Room can generate. v7 → v8 is the identity migration
+ * and is hand-written ([MIGRATION_7_8]): it translates `source`/`youtube_video_id` into
+ * `provider`/`external_id`, relaxes `media_store_id`/`relative_path` to nullable, and rebuilds the two
+ * user-owned tables without their destructive foreign keys — none of which SQLite can do in place.
+ * `Phase4IdentityMigrationTest` migrates a realistic v7 database and asserts the data survives.
  */
 @Database(
     entities = [
@@ -34,13 +41,14 @@ import com.kaon.music.core.data.db.entity.TrackEntity
         PlaylistEntity::class,
         PlaylistTrackEntity::class
     ],
-    version = 6,
+    version = 8,
     autoMigrations = [
         AutoMigration(from = 1, to = 2),
         AutoMigration(from = 2, to = 3),
         AutoMigration(from = 3, to = 4),
         AutoMigration(from = 4, to = 5),
-        AutoMigration(from = 5, to = 6)
+        AutoMigration(from = 5, to = 6),
+        AutoMigration(from = 6, to = 7)
     ],
     exportSchema = true
 )
@@ -55,6 +63,12 @@ abstract class KaonDatabase : RoomDatabase() {
     companion object {
         private const val DATABASE_NAME = "kaon_music.db"
 
+        /**
+         * Migrations Room cannot generate. Every builder — production and test — must add these, so
+         * they live here rather than at the single call site.
+         */
+        val MANUAL_MIGRATIONS = arrayOf(MIGRATION_7_8)
+
         @Volatile
         private var INSTANCE: KaonDatabase? = null
 
@@ -65,6 +79,7 @@ abstract class KaonDatabase : RoomDatabase() {
                     KaonDatabase::class.java,
                     DATABASE_NAME
                 )
+                    .addMigrations(*MANUAL_MIGRATIONS)
                     .build()
                     .also { INSTANCE = it }
             }

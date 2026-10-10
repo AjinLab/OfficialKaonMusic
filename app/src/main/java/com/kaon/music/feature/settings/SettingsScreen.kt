@@ -62,16 +62,7 @@ fun SettingsScreen(
     val settings by viewModel.settings.collectAsStateWithLifecycle()
     val selectedSection by viewModel.selectedSection.collectAsStateWithLifecycle()
     val isSyncing by viewModel.isSyncing.collectAsStateWithLifecycle()
-    val userMessage by viewModel.userMessage.collectAsStateWithLifecycle()
-
-    val snackbarHostState = remember { SnackbarHostState() }
-
-    LaunchedEffect(userMessage) {
-        userMessage?.let { msg ->
-            snackbarHostState.showSnackbar(msg)
-            viewModel.dismissUserMessage()
-        }
-    }
+    // Transient messages come from the root's UserMessageBus collection; nothing local here.
 
     // Detail Sub-pages Navigation
     when (selectedSection) {
@@ -154,7 +145,12 @@ fun SettingsScreen(
         }
     }
 
-    BackHandler(onBack = onBack)
+    // Back priority: a subpage pops to the settings root first; at the root, no local handler —
+    // the navigation stack's handler pops the destination. One handler here replaces the six
+    // per-page handlers (they all did navigateToSection(null)).
+    BackHandler(enabled = selectedSection != null) {
+        viewModel.navigateToSection(null)
+    }
 
     Box(
         modifier = modifier
@@ -201,12 +197,6 @@ fun SettingsScreen(
             }
         }
 
-        SnackbarHost(
-            hostState = snackbarHostState,
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .padding(bottom = bottomPadding.calculateBottomPadding() + 8.dp)
-        )
     }
 }
 

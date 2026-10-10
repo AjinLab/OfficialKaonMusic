@@ -4,7 +4,7 @@ import android.app.Application
 import com.kaon.music.BuildConfig
 import com.kaon.music.app.di.AppContainer
 import com.kaon.music.core.logging.ReleaseTree
-import com.kaon.music.core.online.YouTubeStreamExtractor
+import com.kaon.music.core.extraction.YouTubeStreamExtractor
 import com.kaon.music.core.playback.YouTubeStreamResolver
 import kotlinx.coroutines.launch
 import timber.log.Timber
@@ -22,6 +22,7 @@ class KaonApplication : Application() {
         Timber.plant(if (BuildConfig.DEBUG) Timber.DebugTree() else ReleaseTree())
 
         container = AppContainer(this)
+        container.bootstrapKernel()
 
         // Context handoff only: both calls just store an application reference (ARCHITECTURE.md §5.4
         // — no file I/O, JSON parsing, or network in onCreate).

@@ -107,7 +107,13 @@ class SyncEngine(
 
                 if (verifiedMatch != null) {
                     // Unambiguous single match: Re-link stored Kaon trackId to new MediaStoreId
-                    trackDao.reLinkTrack(verifiedMatch.trackId, item.mediaStoreId)
+                    // Locator only: media_store_id and relative_path move, track_id does not, so the
+                    // user's favorites, history and playlist membership follow the file (spec §13).
+                    trackDao.reLinkTrack(
+                        trackId = verifiedMatch.trackId,
+                        newMediaStoreId = item.mediaStoreId,
+                        newRelativePath = item.relativePath
+                    )
                     if ((verifiedMatch.dateAdded == 0L && item.dateAdded > 0L) ||
                         (verifiedMatch.mimeType.isNullOrBlank() && !item.mimeType.isNullOrBlank())
                     ) {

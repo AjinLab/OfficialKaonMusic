@@ -58,6 +58,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.paging.compose.collectAsLazyPagingItems
 import com.kaon.music.core.artwork.SizeBucket
 import com.kaon.music.core.data.model.Album
 import com.kaon.music.core.data.model.Artist
@@ -66,12 +67,16 @@ import com.kaon.music.core.data.model.Track
 import com.kaon.music.core.designsystem.component.ArtworkImage
 import com.kaon.music.core.designsystem.component.EmptyStateView
 import com.kaon.music.core.designsystem.component.TrackItem
+import com.kaon.music.core.designsystem.component.pagedItems
 import com.kaon.music.core.designsystem.theme.KaonBackground
+import com.kaon.music.core.designsystem.theme.KaonOnAccent
 import com.kaon.music.core.designsystem.theme.KaonPrimary
 import com.kaon.music.core.designsystem.theme.KaonSurfaceElevated
 import com.kaon.music.core.designsystem.theme.KaonTextPrimary
 import com.kaon.music.core.designsystem.theme.KaonTextSecondary
 import com.kaon.music.core.designsystem.theme.KaonTextTertiary
+import com.kaon.music.core.designsystem.theme.LikedSongsBrush
+import com.kaon.music.core.designsystem.theme.PlaylistHeaderBrush
 import com.kaon.music.feature.library.album.AlbumDetailScreen
 import com.kaon.music.feature.library.artist.ArtistDetailScreen
 import com.kaon.music.feature.library.playlist.AddToPlaylistBottomSheet
@@ -84,186 +89,24 @@ fun LibraryScreen(
     bottomPadding: PaddingValues,
     modifier: Modifier = Modifier,
     onNavigateToSearch: () -> Unit = {},
-    onRequestPermission: () -> Unit = {}
+    onRequestPermission: () -> Unit = {},
+    // Destination callbacks (Phase 6A): the screen reports intent, the navigation stack decides.
+    onOpenAlbum: (Long) -> Unit = {},
+    onOpenArtist: (Long, String) -> Unit = { _, _ -> },
+    onOpenPlaylist: (Long) -> Unit = {},
+    onOpenLikedSongs: () -> Unit = {},
+    onAddToPlaylist: (Track) -> Unit = {},
+    onCreatePlaylistRequest: () -> Unit = {}
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
-    val snackbarHostState = remember { SnackbarHostState() }
-
-    var trackForAddToPlaylist by remember { mutableStateOf<Track?>(null) }
-    var showCreatePlaylistDialog by remember { mutableStateOf(false) }
-    var trackToAppendAfterCreate by remember { mutableStateOf<Long?>(null) }
-
-    LaunchedEffect(uiState.userMessage) {
-        uiState.userMessage?.let { message ->
-            snackbarHostState.showSnackbar(message)
-            viewModel.dismissUserMessage()
-        }
-    }
-
-    // Snackbars and the add-to-playlist flow must stay reachable from the detail screens
-    // below, which replace the browse content entirely.
-    val overlays: @Composable () -> Unit = {
-        if (trackForAddToPlaylist != null) {
-            AddToPlaylistBottomSheet(
-                track = trackForAddToPlaylist!!,
-                playlists = uiState.playlists,
-                onDismiss = { trackForAddToPlaylist = null },
-                onSelectPlaylist = { playlist ->
-                    val track = trackForAddToPlaylist!!
-                    viewModel.addTrackToPlaylist(playlist.id, track.id, track.displayTitle, playlist.name)
-                    trackForAddToPlaylist = null
-                },
-                onCreateNewPlaylist = {
-                    val track = trackForAddToPlaylist!!
-                    trackToAppendAfterCreate = track.id
-                    trackForAddToPlaylist = null
-                    showCreatePlaylistDialog = true
-                }
-            )
-        }
-
-        if (showCreatePlaylistDialog) {
-            var playlistNameInput by remember { mutableStateOf("") }
-            AlertDialog(
-                onDismissRequest = { showCreatePlaylistDialog = false },
-                title = { Text("New Playlist") },
-                text = {
-                    OutlinedTextField(
-                        value = playlistNameInput,
-                        onValueChange = { if (it.length <= 50) playlistNameInput = it },
-                        label = { Text("Playlist Name") },
-                        placeholder = { Text("My Awesome Playlist") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                },
-                confirmButton = {
-                    Button(
-                        onClick = {
-                            val name = playlistNameInput.trim()
-                            if (name.isNotBlank()) {
-                                viewModel.createPlaylist(name, trackToAppendAfterCreate)
-                                showCreatePlaylistDialog = false
-                                trackToAppendAfterCreate = null
-                            }
-                        },
-                        colors = ButtonDefaults.buttonColors(containerColor = KaonPrimary)
-                    ) {
-                        Text("Create")
-                    }
-                },
-                dismissButton = {
-                    TextButton(onClick = {
-                        showCreatePlaylistDialog = false
-                        trackToAppendAfterCreate = null
-                    }) {
-                        Text("Cancel", color = KaonTextSecondary)
-                    }
-                }
-            )
-        }
-
-        Box(modifier = Modifier.fillMaxSize()) {
-            SnackbarHost(
-                hostState = snackbarHostState,
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(bottom = bottomPadding.calculateBottomPadding() + 8.dp)
-            )
-        }
-    }
-
-    // Detail Screen Overlays
-    if (uiState.selectedPlaylist != null) {
-        val playlist = uiState.selectedPlaylist!!
-        PlaylistDetailScreen(
-            playlist = playlist,
-            tracks = uiState.playlistTracks,
-            activeTrackId = uiState.activeTrackId,
-            isPlaying = uiState.isPlaying,
-            onBack = { viewModel.selectPlaylist(null) },
-            onTrackClick = { track, index -> viewModel.playPlaylist(playlist, shuffle = false, startIndex = index) },
-            onPlayAll = { viewModel.playPlaylist(playlist, shuffle = false) },
-            onShuffleAll = { viewModel.playPlaylist(playlist, shuffle = true) },
-            onFavoriteToggle = viewModel::toggleFavorite,
-            onPlayNext = viewModel::playNext,
-            onAddToQueue = viewModel::addToQueue,
-            onRemoveFromPlaylist = { trackId -> viewModel.removeTrackFromPlaylist(playlist.id, trackId) },
-            onReorder = { orderedIds -> viewModel.reorderPlaylistTracks(playlist.id, orderedIds) },
-            onRenamePlaylist = { newName -> viewModel.renamePlaylist(playlist.id, newName) },
-            onDeletePlaylist = { viewModel.deletePlaylist(playlist.id) },
-            onAddToPlaylist = { track -> trackForAddToPlaylist = track },
-            bottomPadding = bottomPadding,
-            modifier = modifier
-        )
-        overlays()
-        return
-    }
-
-    if (uiState.isLikedSongsSelected) {
-        LikedSongsScreen(
-            tracks = uiState.favoriteTracks,
-            activeTrackId = uiState.activeTrackId,
-            isPlaying = uiState.isPlaying,
-            onBack = viewModel::clearLikedSongs,
-            onTrackClick = { track -> viewModel.playTrack(track, uiState.favoriteTracks) },
-            onPlayAll = { viewModel.playLikedSongs(shuffle = false) },
-            onShuffleAll = { viewModel.playLikedSongs(shuffle = true) },
-            onFavoriteToggle = viewModel::toggleFavorite,
-            onPlayNext = viewModel::playNext,
-            onAddToQueue = viewModel::addToQueue,
-            onAddToPlaylist = { track -> trackForAddToPlaylist = track },
-            bottomPadding = bottomPadding,
-            modifier = modifier
-        )
-        overlays()
-        return
-    }
-
-    if (uiState.selectedAlbum != null) {
-        val album = uiState.selectedAlbum!!
-        AlbumDetailScreen(
-            album = album,
-            tracks = uiState.albumTracks,
-            activeTrackId = uiState.activeTrackId,
-            isPlaying = uiState.isPlaying,
-            onBack = viewModel::clearSelectedAlbum,
-            onTrackClick = { track -> viewModel.playTrack(track, uiState.albumTracks) },
-            onPlayAlbum = { viewModel.playAlbum(album, shuffle = false) },
-            onShuffleAlbum = { viewModel.playAlbum(album, shuffle = true) },
-            onFavoriteToggle = viewModel::toggleFavorite,
-            onPlayNext = viewModel::playNext,
-            onAddToQueue = viewModel::addToQueue,
-            onAddToPlaylist = { track -> trackForAddToPlaylist = track },
-            bottomPadding = bottomPadding,
-            modifier = modifier
-        )
-        overlays()
-        return
-    }
-
-    if (uiState.selectedArtist != null) {
-        val artist = uiState.selectedArtist!!
-        ArtistDetailScreen(
-            artist = artist,
-            albums = uiState.artistAlbums,
-            tracks = uiState.artistTracks,
-            activeTrackId = uiState.activeTrackId,
-            isPlaying = uiState.isPlaying,
-            onBack = viewModel::clearSelectedArtist,
-            onAlbumClick = viewModel::selectAlbum,
-            onTrackClick = { track -> viewModel.playTrack(track, uiState.artistTracks) },
-            onPlayAll = { viewModel.playArtist(artist) },
-            onFavoriteToggle = viewModel::toggleFavorite,
-            onPlayNext = viewModel::playNext,
-            onAddToQueue = viewModel::addToQueue,
-            onAddToPlaylist = { track -> trackForAddToPlaylist = track },
-            bottomPadding = bottomPadding,
-            modifier = modifier
-        )
-        overlays()
-        return
-    }
+    // Paged library data. Each presents only the pages the list has scrolled through, so none of
+    // these is a copy of the library (ARCHITECTURE.md §6).
+    val pagedTracks = viewModel.pagedTracks.collectAsLazyPagingItems()
+    val pagedFavorites = viewModel.pagedFavoriteTracks.collectAsLazyPagingItems()
+    val pagedAlbums = viewModel.pagedAlbums.collectAsLazyPagingItems()
+    val pagedArtists = viewModel.pagedArtists.collectAsLazyPagingItems()
+    val pagedPlaylistTracks = viewModel.pagedPlaylistTracks.collectAsLazyPagingItems()
+    val playlistStats by viewModel.playlistStats.collectAsStateWithLifecycle()
 
     Box(
         modifier = modifier
@@ -416,7 +259,7 @@ fun LibraryScreen(
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Text(
-                                        text = "${uiState.tracks.size} tracks",
+                                        text = "${uiState.trackCount} tracks",
                                         style = MaterialTheme.typography.bodySmall,
                                         color = KaonTextSecondary
                                     )
@@ -444,7 +287,7 @@ fun LibraryScreen(
                                 }
                             }
 
-                            if (uiState.tracks.isEmpty()) {
+                            if (pagedTracks.itemCount == 0 && uiState.trackCount == 0) {
                                 item {
                                     EmptyStateView(
                                         icon = Icons.Default.MusicNote,
@@ -455,23 +298,23 @@ fun LibraryScreen(
                                     )
                                 }
                             } else {
-                                items(uiState.tracks, key = { "track_${it.id}" }) { track ->
+                                pagedItems(pagedTracks, key = { "track_${it.stableKey}" }) { track ->
                                     TrackItem(
                                         track = track,
                                         isPlaying = uiState.isPlaying,
-                                        isCurrent = track.id == uiState.activeTrackId,
+                                        isCurrent = track.id.value == uiState.activeTrackId,
                                         onClick = { viewModel.playTrack(track) },
-                                        onFavoriteToggle = { viewModel.toggleFavorite(track.id) },
+                                        onFavoriteToggle = { viewModel.toggleFavorite(track) },
                                         onPlayNext = { viewModel.playNext(track) },
                                         onAddToQueue = { viewModel.addToQueue(track) },
-                                        onAddToPlaylist = { trackForAddToPlaylist = track }
+                                        onAddToPlaylist = { onAddToPlaylist(track) }
                                     )
                                 }
                             }
                         }
 
                         LibraryFilter.ALBUMS -> {
-                            if (uiState.albums.isEmpty()) {
+                            if (pagedAlbums.itemCount == 0) {
                                 item {
                                     EmptyStateView(
                                         icon = Icons.Default.Album,
@@ -482,17 +325,17 @@ fun LibraryScreen(
                                     )
                                 }
                             } else {
-                                items(uiState.albums, key = { "album_${it.albumId}" }) { album ->
+                                pagedItems(pagedAlbums, key = { "album_${it.albumId}" }) { album ->
                                     AlbumRowItem(
                                         album = album,
-                                        onClick = { viewModel.selectAlbum(album) }
+                                        onClick = { onOpenAlbum(album.albumId) }
                                     )
                                 }
                             }
                         }
 
                         LibraryFilter.ARTISTS -> {
-                            if (uiState.artists.isEmpty()) {
+                            if (pagedArtists.itemCount == 0) {
                                 item {
                                     EmptyStateView(
                                         icon = Icons.Default.Person,
@@ -503,17 +346,17 @@ fun LibraryScreen(
                                     )
                                 }
                             } else {
-                                items(uiState.artists, key = { "artist_${it.artistId}_${it.name}" }) { artist ->
+                                pagedItems(pagedArtists, key = { "artist_${it.artistId}_${it.name}" }) { artist ->
                                     ArtistRowItem(
                                         artist = artist,
-                                        onClick = { viewModel.selectArtist(artist) }
+                                        onClick = { onOpenArtist(artist.artistId, artist.name) }
                                     )
                                 }
                             }
                         }
 
                         LibraryFilter.FAVORITES -> {
-                            if (uiState.favoriteTracks.isEmpty()) {
+                            if (uiState.favoriteCount == 0) {
                                 item {
                                     EmptyStateView(
                                         icon = Icons.Filled.Favorite,
@@ -526,8 +369,8 @@ fun LibraryScreen(
                             } else {
                                 item {
                                     LikedSongsRowItem(
-                                        songCount = uiState.favoriteTracks.size,
-                                        onClick = viewModel::selectLikedSongs
+                                        songCount = uiState.favoriteCount,
+                                        onClick = onOpenLikedSongs
                                     )
                                 }
 
@@ -541,7 +384,7 @@ fun LibraryScreen(
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
                                         Text(
-                                            text = "Favorite Tracks (${uiState.favoriteTracks.size})",
+                                            text = "Favorite Tracks (${uiState.favoriteCount})",
                                             style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
                                             color = KaonTextPrimary
                                         )
@@ -565,16 +408,16 @@ fun LibraryScreen(
                                     }
                                 }
 
-                                items(uiState.favoriteTracks, key = { "fav_${it.id}" }) { track ->
+                                pagedItems(pagedFavorites, key = { "fav_${it.stableKey}" }) { track ->
                                     TrackItem(
                                         track = track,
                                         isPlaying = uiState.isPlaying,
-                                        isCurrent = track.id == uiState.activeTrackId,
+                                        isCurrent = track.id.value == uiState.activeTrackId,
                                         onClick = { viewModel.playTrack(track) },
-                                        onFavoriteToggle = { viewModel.toggleFavorite(track.id) },
+                                        onFavoriteToggle = { viewModel.toggleFavorite(track) },
                                         onPlayNext = { viewModel.playNext(track) },
                                         onAddToQueue = { viewModel.addToQueue(track) },
-                                        onAddToPlaylist = { trackForAddToPlaylist = track }
+                                        onAddToPlaylist = { onAddToPlaylist(track) }
                                     )
                                 }
                             }
@@ -645,16 +488,16 @@ fun LibraryScreen(
                                         )
                                     }
                                 } else {
-                                    items(uiState.recentTracks, key = { "recent_play_${it.id}" }) { track ->
+                                    items(uiState.recentTracks, key = { "recent_play_${it.stableKey}" }) { track ->
                                         TrackItem(
                                             track = track,
                                             isPlaying = uiState.isPlaying,
-                                            isCurrent = track.id == uiState.activeTrackId,
+                                            isCurrent = track.id.value == uiState.activeTrackId,
                                             onClick = { viewModel.playTrack(track, uiState.recentTracks) },
-                                            onFavoriteToggle = { viewModel.toggleFavorite(track.id) },
+                                            onFavoriteToggle = { viewModel.toggleFavorite(track) },
                                             onPlayNext = { viewModel.playNext(track) },
                                             onAddToQueue = { viewModel.addToQueue(track) },
-                                            onAddToPlaylist = { trackForAddToPlaylist = track }
+                                            onAddToPlaylist = { onAddToPlaylist(track) }
                                         )
                                     }
                                 }
@@ -713,16 +556,16 @@ fun LibraryScreen(
                                         )
                                     }
                                 } else {
-                                    items(uiState.recentlyAddedTracks, key = { "recent_add_${it.id}" }) { track ->
+                                    items(uiState.recentlyAddedTracks, key = { "recent_add_${it.stableKey}" }) { track ->
                                         TrackItem(
                                             track = track,
                                             isPlaying = uiState.isPlaying,
-                                            isCurrent = track.id == uiState.activeTrackId,
+                                            isCurrent = track.id.value == uiState.activeTrackId,
                                             onClick = { viewModel.playTrack(track, uiState.recentlyAddedTracks) },
-                                            onFavoriteToggle = { viewModel.toggleFavorite(track.id) },
+                                            onFavoriteToggle = { viewModel.toggleFavorite(track) },
                                             onPlayNext = { viewModel.playNext(track) },
                                             onAddToQueue = { viewModel.addToQueue(track) },
-                                            onAddToPlaylist = { trackForAddToPlaylist = track }
+                                            onAddToPlaylist = { onAddToPlaylist(track) }
                                         )
                                     }
                                 }
@@ -760,10 +603,7 @@ fun LibraryScreen(
                                             )
                                             Spacer(modifier = Modifier.height(20.dp))
                                             Button(
-                                                onClick = {
-                                                    trackToAppendAfterCreate = null
-                                                    showCreatePlaylistDialog = true
-                                                },
+                                                onClick = onCreatePlaylistRequest,
                                                 colors = ButtonDefaults.buttonColors(containerColor = KaonPrimary)
                                             ) {
                                                 Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -789,10 +629,7 @@ fun LibraryScreen(
                                         )
 
                                         Button(
-                                            onClick = {
-                                                trackToAppendAfterCreate = null
-                                                showCreatePlaylistDialog = true
-                                            },
+                                            onClick = onCreatePlaylistRequest,
                                             colors = ButtonDefaults.buttonColors(containerColor = KaonSurfaceElevated),
                                             contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
                                         ) {
@@ -806,7 +643,7 @@ fun LibraryScreen(
                                 items(uiState.playlists, key = { "playlist_${it.id}" }) { playlist ->
                                     PlaylistRowItem(
                                         playlist = playlist,
-                                        onClick = { viewModel.selectPlaylist(playlist) },
+                                        onClick = { onOpenPlaylist(playlist.id) },
                                         onPlay = { viewModel.playPlaylist(playlist) }
                                     )
                                 }
@@ -817,8 +654,6 @@ fun LibraryScreen(
             }
         }
     }
-
-    overlays()
 }
 
 @Composable
@@ -838,11 +673,7 @@ private fun PlaylistRowItem(
             modifier = Modifier
                 .size(56.dp)
                 .clip(RoundedCornerShape(8.dp))
-                .background(
-                    Brush.linearGradient(
-                        listOf(Color(0xFF3B82F6), Color(0xFF8B5CF6))
-                    )
-                ),
+                .background(PlaylistHeaderBrush),
             contentAlignment = Alignment.Center
         ) {
             Icon(
@@ -900,7 +731,7 @@ private fun LibraryChip(
         Text(
             text = text,
             style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
-            color = if (isSelected) Color(0xFF141418) else KaonTextPrimary,
+            color = if (isSelected) KaonOnAccent else KaonTextPrimary,
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
         )
     }
@@ -922,11 +753,7 @@ private fun LikedSongsRowItem(
             modifier = Modifier
                 .size(56.dp)
                 .clip(RoundedCornerShape(8.dp))
-                .background(
-                    Brush.linearGradient(
-                        listOf(Color(0xFF8B5CF6), Color(0xFFEC4899), Color(0xFFF43F5E))
-                    )
-                ),
+                .background(LikedSongsBrush),
             contentAlignment = Alignment.Center
         ) {
             Icon(

@@ -33,40 +33,37 @@ class KaonViewModelFactory(
         handle: SavedStateHandle
     ): T = when {
         modelClass.isAssignableFrom(HomeViewModel::class.java) -> HomeViewModel(
-            trackRepository = container.trackRepository,
-            playbackFacade = container.playbackFacade,
+            libraryController = container.libraryController,
+            playerController = container.playerController,
             savedStateHandle = handle
         ) as T
 
         modelClass.isAssignableFrom(SearchViewModel::class.java) -> SearchViewModel(
-            trackRepository = container.trackRepository,
-            playbackFacade = container.playbackFacade,
+            libraryController = container.libraryController,
+            playerController = container.playerController,
             networkConnectivityMonitor = container.networkMonitor,
-            playlistRepository = container.playlistRepository,
             savedStateHandle = handle
         ) as T
 
         modelClass.isAssignableFrom(LibraryViewModel::class.java) -> LibraryViewModel(
-            trackRepository = container.trackRepository,
-            playbackFacade = container.playbackFacade,
-            playlistRepository = container.playlistRepository,
-            savedStateHandle = handle
+            libraryController = container.libraryController,
+            playerController = container.playerController,
+            savedStateHandle = handle,
+            userMessageBus = container.userMessageBus
         ) as T
 
         modelClass.isAssignableFrom(PlayerViewModel::class.java) -> PlayerViewModel(
-            playbackFacade = container.playbackFacade,
-            trackRepository = container.trackRepository,
-            playlistRepository = container.playlistRepository,
-            metadataRepository = container.metadataRepository,
+            playerController = container.playerController,
+            libraryController = container.libraryController,
             savedStateHandle = handle
         ) as T
 
         modelClass.isAssignableFrom(SettingsViewModel::class.java) -> SettingsViewModel(
-            settingsRepository = container.settingsRepository,
-            trackRepository = container.trackRepository,
-            historyRepository = container.historyRepository,
+            settingsController = container.settingsController,
+            libraryController = container.libraryController,
             youtubeSessionManager = container.youtubeSessionManager,
-            savedStateHandle = handle
+            savedStateHandle = handle,
+            userMessageBus = container.userMessageBus
         ) as T
 
         else -> throw IllegalArgumentException("Unknown ViewModel class: ${modelClass.name}")

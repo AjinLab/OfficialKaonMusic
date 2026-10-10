@@ -5,6 +5,7 @@ import com.kaon.music.core.data.model.AlbumMetadata
 import com.kaon.music.core.data.model.ArtistMetadata
 import com.kaon.music.core.data.model.LyricLine
 import com.kaon.music.core.data.model.LyricsResult
+import com.kaon.music.core.data.model.ArtworkRef
 import com.kaon.music.core.data.model.Track
 import com.kaon.music.core.data.model.TrackMetadata
 import com.landofoz.musicmeta.ApiKeyConfig
@@ -407,9 +408,9 @@ class MetadataRepositoryImpl(
     }
 
     override suspend fun getTrackArtworkUrl(track: Track): String? = withContext(ioDispatcher) {
-        if (track.isOnline && track.contentUri != null) {
-            return@withContext track.contentUri.toString()
-        }
+        // A provider thumbnail is already artwork; enrichment only has to run for local files whose
+        // art is not embedded (ARCHITECTURE.md §3.1 — artwork is never the playback locator).
+        (track.artwork as? ArtworkRef.RemoteUrl)?.let { return@withContext it.url }
         val cacheKey = "track_art_${track.artist.lowercase().trim()}_${track.album.lowercase().trim()}"
         trackArtworkUrlCache.get(cacheKey)?.let { return@withContext it }
 

@@ -1,5 +1,8 @@
 package com.kaon.music.core.data.sync
 
+import com.kaon.music.core.data.db.dao.FakeTrackDaoBase
+import com.kaon.music.core.data.db.dao.FakePlayEventDaoBase
+import com.kaon.music.core.data.db.dao.FakeFavoriteDaoBase
 import com.kaon.music.core.data.db.dao.FavoriteDao
 import com.kaon.music.core.data.db.dao.PlayEventDao
 import com.kaon.music.core.data.db.dao.TrackDao
@@ -582,7 +585,7 @@ class SyncEngineTest {
         assertTrue(fakeFavoriteDao.isFavorite(originalTrackId))
         val favoritesList = repo.observeFavoriteTracks().first()
         assertEquals(1, favoritesList.size)
-        assertEquals(originalTrackId, favoritesList.first().id)
+        assertEquals(originalTrackId, favoritesList.first().id.value)
         assertEquals(9999L, favoritesList.first().mediaStoreId)
         assertTrue(favoritesList.first().isFavorite)
     }
@@ -659,7 +662,7 @@ class SyncEngineTest {
         // Favorite resurfaces automatically with stable trackId
         val restoredFavorites = repo.observeFavoriteTracks().first()
         assertEquals(1, restoredFavorites.size)
-        assertEquals(trackId, restoredFavorites.first().id)
+        assertEquals(trackId, restoredFavorites.first().id.value)
         assertTrue(restoredFavorites.first().isFavorite)
     }
 
@@ -727,7 +730,7 @@ class SyncEngineTest {
         assertFalse(repo.observeIsFavorite(1L).first())
         val updatedFavs = repo.observeFavoriteTracks().first()
         assertEquals(1, updatedFavs.size)
-        assertEquals(2L, updatedFavs.first().id)
+        assertEquals(2L, updatedFavs.first().id.value)
     }
 
     /**
@@ -786,10 +789,10 @@ class SyncEngineTest {
         // Must contain 2 distinct tracks (Track A is not listed twice)
         assertEquals(2, recentTracks.size)
         // Track A had latest play at 3000L > 2000L, so Track A is first
-        assertEquals(1L, recentTracks[0].id)
+        assertEquals(1L, recentTracks[0].id.value)
         assertEquals("Track A", recentTracks[0].title)
         // Track B is second
-        assertEquals(2L, recentTracks[1].id)
+        assertEquals(2L, recentTracks[1].id.value)
         assertEquals("Track B", recentTracks[1].title)
     }
 
@@ -848,8 +851,8 @@ class SyncEngineTest {
 
         val mostPlayed = repo.observeMostPlayedTracks().first()
         assertEquals(2, mostPlayed.size)
-        assertEquals(1L, mostPlayed[0].id)
-        assertEquals(2L, mostPlayed[1].id)
+        assertEquals(1L, mostPlayed[0].id.value)
+        assertEquals(2L, mostPlayed[1].id.value)
     }
 
     /**
@@ -905,12 +908,12 @@ class SyncEngineTest {
         // Recently Played returns ONLY played track
         val recent = repo.observeRecentlyPlayedTracks().first()
         assertEquals(1, recent.size)
-        assertEquals(1L, recent.first().id)
+        assertEquals(1L, recent.first().id.value)
 
         // Most Played returns ONLY played track
         val most = repo.observeMostPlayedTracks().first()
         assertEquals(1, most.size)
-        assertEquals(1L, most.first().id)
+        assertEquals(1L, most.first().id.value)
     }
 
     /**
@@ -983,11 +986,11 @@ class SyncEngineTest {
         // Resurfaces automatically in Recent and Most Played queries
         val resurfacedRecent = repo.observeRecentlyPlayedTracks().first()
         assertEquals(1, resurfacedRecent.size)
-        assertEquals(42L, resurfacedRecent.first().id)
+        assertEquals(42L, resurfacedRecent.first().id.value)
 
         val resurfacedMost = repo.observeMostPlayedTracks().first()
         assertEquals(1, resurfacedMost.size)
-        assertEquals(42L, resurfacedMost.first().id)
+        assertEquals(42L, resurfacedMost.first().id.value)
     }
 
     /**
@@ -1042,9 +1045,9 @@ class SyncEngineTest {
 
         assertEquals(2, recentlyAdded.size)
         // Must sort strictly by dateAdded DESC: Track B (5000) > Track A (1000)
-        assertEquals(2L, recentlyAdded[0].id)
+        assertEquals(2L, recentlyAdded[0].id.value)
         assertEquals("Track B", recentlyAdded[0].title)
-        assertEquals(1L, recentlyAdded[1].id)
+        assertEquals(1L, recentlyAdded[1].id.value)
         assertEquals("Track A", recentlyAdded[1].title)
     }
 
@@ -1193,10 +1196,10 @@ class SyncEngineTest {
         val mostPlayed = repo.observeMostPlayedTracks().first()
 
         // Apply ViewModel MOST_PLAYED sorting algorithm
-        val mostPlayedIds = mostPlayed.map { it.id }
+        val mostPlayedIds = mostPlayed.map { it.id.value }
         val rankMap = mostPlayedIds.mapIndexed { index, id -> id to index }.toMap()
-        val (played, unplayed) = allTracks.partition { rankMap.containsKey(it.id) }
-        val sortedPlayed = played.sortedBy { rankMap[it.id] }
+        val (played, unplayed) = allTracks.partition { rankMap.containsKey(it.id.value) }
+        val sortedPlayed = played.sortedBy { rankMap[it.id.value] }
         val sortedUnplayed = unplayed.sortedBy { it.title.lowercase() }
         val finalSorted = sortedPlayed + sortedUnplayed
 
@@ -1241,7 +1244,7 @@ open class MediaStoreScannerFake(
     override fun scanAudioFiles(): List<MediaStoreAudioItem> = items
 }
 
-class FakeTrackDao : TrackDao {
+class FakeTrackDao : FakeTrackDaoBase() {
     val storedTracks = mutableListOf<TrackEntity>()
     private var nextId = 100L
 
@@ -1252,7 +1255,7 @@ class FakeTrackDao : TrackDao {
     override suspend fun getTracksByIds(trackIds: List<Long>): List<TrackEntity> = storedTracks.filter { trackIds.contains(it.trackId) }
     override suspend fun getTrackByMediaStoreId(mediaStoreId: Long): TrackEntity? = storedTracks.find { it.mediaStoreId == mediaStoreId }
 
-    override fun searchTracks(query: String): Flow<List<TrackEntity>> = flowOf(emptyList())
+    override fun searchTracks(query: String, limit: Int): Flow<List<TrackEntity>> = flowOf(emptyList())
 
     override fun observeRecentlyAddedTracks(limit: Int): Flow<List<TrackEntity>> {
         return flowOf(storedTracks.filter { !it.isMissing }.sortedByDescending { it.dateAdded }.take(limit))
@@ -1370,7 +1373,7 @@ class FakeTrackDao : TrackDao {
         tracks.forEach { updateTrack(it) }
     }
 
-    override suspend fun reLinkTrack(trackId: Long, newMediaStoreId: Long, timestamp: Long) {
+    override suspend fun reLinkTrack(trackId: Long, newMediaStoreId: Long, newRelativePath: String?, timestamp: Long) {
         val index = storedTracks.indexOfFirst { it.trackId == trackId }
         if (index >= 0) {
             val old = storedTracks[index]
@@ -1403,7 +1406,7 @@ class FakeTrackDao : TrackDao {
     }
 }
 
-class FakeFavoriteDao(private val fakeTrackDao: FakeTrackDao? = null) : FavoriteDao {
+class FakeFavoriteDao(private val fakeTrackDao: FakeTrackDao? = null) : FakeFavoriteDaoBase() {
     val favorites = mutableMapOf<Long, Long>() // trackId -> addedAt
 
     override fun observeFavoriteTrackIds(): Flow<List<Long>> = flowOf(favorites.keys.toList())
@@ -1434,7 +1437,7 @@ class FakeFavoriteDao(private val fakeTrackDao: FakeTrackDao? = null) : Favorite
     }
 }
 
-class FakePlayEventDao(private val fakeTrackDao: FakeTrackDao? = null) : PlayEventDao {
+class FakePlayEventDao(private val fakeTrackDao: FakeTrackDao? = null) : FakePlayEventDaoBase() {
     val events = mutableListOf<PlayEventEntity>()
 
     override suspend fun insertEvent(event: PlayEventEntity): Long {

@@ -1,10 +1,14 @@
 package com.kaon.music.core.data.model
 
-import android.net.Uri
-
 /**
  * Audio format detection, MIME type canonicalization for Media3/ExoPlayer,
  * lossless status classification, and human-readable badges for music playback.
+ *
+ * Pure Kotlin on purpose: format detection needs a name or a mime type, never a platform `Uri`. The
+ * previous `uri` parameter only existed so callers could hand over a `content://` URI for extension
+ * sniffing — a URI whose last segment is a numeric id and therefore never carried an extension. The
+ * caller now passes the file name or relative path it already has, which keeps the domain model free
+ * of framework types (ARCHITECTURE.md §3.1).
  */
 object AudioFormat {
 
@@ -13,7 +17,6 @@ object AudioFormat {
      */
     fun media3MimeType(
         mimeType: String?,
-        uri: Uri? = null,
         pathOrDisplayName: String? = null
     ): String? {
         val mime = mimeType?.trim()?.lowercase().orEmpty()
@@ -43,7 +46,7 @@ object AudioFormat {
         }
 
         // Fallback: Infer Media3 MIME type from extension
-        val ext = extractExtension(uri, pathOrDisplayName)
+        val ext = extractExtension(pathOrDisplayName)
         return when (ext) {
             "flac" -> "audio/flac"
             "mp3" -> "audio/mpeg"
@@ -71,10 +74,9 @@ object AudioFormat {
      */
     fun label(
         mimeType: String?,
-        uri: Uri? = null,
         pathOrDisplayName: String? = null
     ): String {
-        val canonicalMime = media3MimeType(mimeType, uri, pathOrDisplayName).orEmpty()
+        val canonicalMime = media3MimeType(mimeType, pathOrDisplayName).orEmpty()
         return when {
             canonicalMime == "audio/flac" -> "FLAC"
             canonicalMime == "audio/mpeg" -> "MP3"
@@ -94,7 +96,7 @@ object AudioFormat {
             canonicalMime == "audio/x-dsd" -> "DSD"
             canonicalMime == "audio/midi" -> "MIDI"
             else -> {
-                val ext = extractExtension(uri, pathOrDisplayName)
+                val ext = extractExtension(pathOrDisplayName)
                 ext?.uppercase() ?: "AUDIO"
             }
         }
@@ -105,10 +107,9 @@ object AudioFormat {
      */
     fun isLossless(
         mimeType: String?,
-        uri: Uri? = null,
         pathOrDisplayName: String? = null
     ): Boolean {
-        val lbl = label(mimeType, uri, pathOrDisplayName)
+        val lbl = label(mimeType, pathOrDisplayName)
         return lbl in LOSSLESS_FORMATS
     }
 
@@ -117,13 +118,12 @@ object AudioFormat {
      */
     fun qualityBadge(
         mimeType: String?,
-        uri: Uri? = null,
         pathOrDisplayName: String? = null,
         isOnline: Boolean = false
     ): String {
         if (isOnline) return "YouTube Music"
-        val formatLabel = label(mimeType, uri, pathOrDisplayName)
-        return if (isLossless(mimeType, uri, pathOrDisplayName)) {
+        val formatLabel = label(mimeType, pathOrDisplayName)
+        return if (isLossless(mimeType, pathOrDisplayName)) {
             "$formatLabel • Lossless"
         } else {
             formatLabel
@@ -132,31 +132,10 @@ object AudioFormat {
 
     private val LOSSLESS_FORMATS = setOf("FLAC", "WAV", "ALAC", "AIFF", "DSD", "APE")
 
-    private fun extractExtension(uri: Uri?, pathOrDisplayName: String?): String? {
-        val fromPath = pathOrDisplayName
-            ?.substringAfterLast('/', pathOrDisplayName)
-            ?.substringAfterLast('.', "")
-            ?.trim()
-            ?.lowercase()
-            ?.takeIf { it.isNotEmpty() && it.length <= 6 && it.all { char -> char.isLetterOrDigit() } }
-
-        if (fromPath != null) return fromPath
-
-        val uriPath = uri?.path.orEmpty()
-        val fromUriPath = uriPath
-            .substringAfterLast('/', uriPath)
-            .substringAfterLast('.', "")
-            .trim()
-            .lowercase()
-            .takeIf { it.isNotEmpty() && it.length <= 6 && it.all { char -> char.isLetterOrDigit() } }
-
-        if (fromUriPath != null) return fromUriPath
-
-        val lastSegment = uri?.lastPathSegment.orEmpty()
-        return lastSegment
-            .substringAfterLast('.', "")
-            .trim()
-            .lowercase()
-            .takeIf { it.isNotEmpty() && it.length <= 6 && it.all { char -> char.isLetterOrDigit() } }
-    }
+    private fun extractExtension(pathOrDisplayName: String?): String? = pathOrDisplayName
+        ?.substringAfterLast('/', pathOrDisplayName)
+        ?.substringAfterLast('.', "")
+        ?.trim()
+        ?.lowercase()
+        ?.takeIf { it.isNotEmpty() && it.length <= 6 && it.all { char -> char.isLetterOrDigit() } }
 }

@@ -3,6 +3,10 @@ package com.kaon.music.feature.player
 import android.content.Intent
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
@@ -79,8 +83,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -93,11 +97,13 @@ import com.kaon.music.core.artwork.SizeBucket
 import com.kaon.music.core.data.model.LyricsResult
 import com.kaon.music.core.data.model.Track
 import com.kaon.music.core.designsystem.component.ArtworkImage
+import com.kaon.music.core.designsystem.component.PlayingIndicator
 import com.kaon.music.core.designsystem.component.formatDuration
 import com.kaon.music.core.designsystem.theme.KaonBackground
 import com.kaon.music.core.designsystem.theme.KaonCardBackground
 import com.kaon.music.core.designsystem.theme.KaonDivider
 import com.kaon.music.core.designsystem.theme.KaonHeartRed
+import com.kaon.music.core.designsystem.theme.KaonOnAccent
 import com.kaon.music.core.designsystem.theme.KaonPrimary
 import com.kaon.music.core.designsystem.theme.KaonSurfaceElevated
 import com.kaon.music.core.designsystem.theme.KaonTextPrimary
@@ -110,12 +116,15 @@ import com.kaon.music.core.playback.model.RepeatMode
 import kotlinx.coroutines.flow.StateFlow
 
 /**
- * Expanded player.
+ * Expanded player — the listening room's stage.
+ *
+ * The backdrop is the current artwork, scaled, blurred and dimmed, so each track lights the room in
+ * its own colour; the accent owns the transport. Everything else stays quiet.
  *
  * ARCHITECTURE.md §3.2: takes [nowPlaying] and [queue] as values, but [progressFlow] as a flow. The
- * position ticks every 500 ms; collecting it here would recompose this entire 300-line column —
- * artwork, queue item provider, lyrics list — twice per second, and did so even while collapsed.
- * Only [PlayerScrubber] and [SyncedLyrics] observe it.
+ * position ticks every 500 ms; collecting it here would recompose this entire column — artwork,
+ * queue item provider, lyrics list — twice per second. Only [PlayerScrubber] and [SyncedLyrics]
+ * observe it.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -131,7 +140,7 @@ fun FullPlayerOverlay(
     onSeekTo: (Long) -> Unit,
     onToggleRepeat: () -> Unit,
     onToggleShuffle: () -> Unit,
-    onToggleFavorite: (Long) -> Unit,
+    onToggleFavorite: (Track) -> Unit,
     modifier: Modifier = Modifier,
     onMoveQueueItem: (fromIndex: Int, toIndex: Int) -> Unit = { _, _ -> },
     onRemoveQueueItem: (index: Int) -> Unit = {},
@@ -162,16 +171,36 @@ fun FullPlayerOverlay(
 
         val duration = nowPlaying.durationMs.coerceAtLeast(1L)
 
-        Column(
+        Box(
             modifier = Modifier
                 .fillMaxSize()
                 .background(KaonBackground)
-                .statusBarsPadding()
-                .navigationBarsPadding()
-                .padding(horizontal = 24.dp, vertical = 12.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.SpaceBetween
         ) {
+            // Blurred artwork backdrop — the track lights the room. One element of theatre, kept
+            // away from the content column so it never pushes layout.
+            ArtworkImage(
+                track = currentTrack,
+                sizeBucket = SizeBucket.FULL,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .blur(72.dp),
+                cornerRadius = 0.dp
+            )
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(KaonBackground.copy(alpha = 0.82f))
+            )
+
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .statusBarsPadding()
+                    .navigationBarsPadding()
+                    .padding(horizontal = 24.dp, vertical = 12.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.SpaceBetween
+            ) {
             // Top Navigation Bar
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -251,14 +280,13 @@ fun FullPlayerOverlay(
                 modifier = Modifier
                     .weight(1f, fill = false)
                     .aspectRatio(1f)
-                    .shadow(elevation = 16.dp, shape = RoundedCornerShape(20.dp))
-                    .clip(RoundedCornerShape(20.dp))
+                    .clip(RoundedCornerShape(24.dp))
             ) {
                 ArtworkImage(
                     track = currentTrack,
                     sizeBucket = SizeBucket.FULL,
                     modifier = Modifier.fillMaxSize(),
-                    cornerRadius = 20.dp
+                    cornerRadius = 24.dp
                 )
             }
 
@@ -273,7 +301,7 @@ fun FullPlayerOverlay(
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
                         text = currentTrack.displayTitle,
-                        style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold),
+                        style = MaterialTheme.typography.headlineSmall,
                         color = KaonTextPrimary,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
@@ -289,7 +317,7 @@ fun FullPlayerOverlay(
                 }
 
                 IconButton(
-                    onClick = { onToggleFavorite(currentTrack.id) },
+                    onClick = { onToggleFavorite(currentTrack) },
                     modifier = Modifier.size(48.dp)
                 ) {
                     Icon(
@@ -340,7 +368,7 @@ fun FullPlayerOverlay(
                     )
                 }
 
-                // Large Prominent Play/Pause Button (Coral Blush #F0A89C)
+                // Large Prominent Play/Pause Button — the accent is the signal.
                 Surface(
                     modifier = Modifier
                         .size(68.dp)
@@ -353,7 +381,7 @@ fun FullPlayerOverlay(
                         Icon(
                             imageVector = if (nowPlaying.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
                             contentDescription = if (nowPlaying.isPlaying) "Pause" else "Play",
-                            tint = Color(0xFF141418),
+                            tint = KaonOnAccent,
                             modifier = Modifier.size(36.dp)
                         )
                     }
@@ -431,6 +459,7 @@ fun FullPlayerOverlay(
                     )
                 }
             }
+            }
         }
 
         // Lyrics Bottom Sheet
@@ -455,11 +484,11 @@ fun FullPlayerOverlay(
                         Column {
                             Text(
                                 text = "Lyrics",
-                                style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                                style = MaterialTheme.typography.titleLarge,
                                 color = KaonTextPrimary
                             )
                             Text(
-                                text = "${currentTrack.displayTitle} • ${currentTrack.displayArtist}",
+                                text = "${currentTrack.displayTitle} — ${currentTrack.displayArtist}",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = KaonTextSecondary
                             )
@@ -569,7 +598,10 @@ fun FullPlayerOverlay(
                                 Spacer(modifier = Modifier.height(12.dp))
                                 Button(
                                     onClick = onRefreshLyrics,
-                                    colors = ButtonDefaults.buttonColors(containerColor = KaonPrimary)
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = KaonPrimary,
+                                        contentColor = KaonOnAccent
+                                    )
                                 ) {
                                     Text("Retry Search")
                                 }
@@ -595,7 +627,7 @@ fun FullPlayerOverlay(
                 title = {
                     Text(
                         text = "Track Details",
-                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                        style = MaterialTheme.typography.titleMedium,
                         color = KaonTextPrimary
                     )
                 },
@@ -651,7 +683,7 @@ fun FullPlayerOverlay(
                     ) {
                         Text(
                             text = "Now Playing Queue (${queue.tracks.size})",
-                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                            style = MaterialTheme.typography.titleMedium,
                             color = KaonTextPrimary
                         )
 
@@ -710,7 +742,7 @@ fun FullPlayerOverlay(
                                 index = index,
                                 totalCount = queue.tracks.size,
                                 isCurrent = isCurrent,
-                                onToggleFavorite = { onToggleFavorite(track.id) },
+                                onToggleFavorite = { onToggleFavorite(track) },
                                 onMoveUp = { onMoveQueueItem(index, index - 1) },
                                 onMoveDown = { onMoveQueueItem(index, index + 1) },
                                 onRemove = { onRemoveQueueItem(index) }
@@ -728,7 +760,7 @@ fun FullPlayerOverlay(
                 title = {
                     Text(
                         text = "Save Queue as Playlist",
-                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                        style = MaterialTheme.typography.titleMedium,
                         color = KaonTextPrimary
                     )
                 },
@@ -757,7 +789,10 @@ fun FullPlayerOverlay(
                                 isSavePlaylistDialogVisible = false
                             }
                         },
-                        colors = ButtonDefaults.buttonColors(containerColor = KaonPrimary)
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = KaonPrimary,
+                            contentColor = KaonOnAccent
+                        )
                     ) {
                         Text("Save")
                     }
@@ -819,13 +854,13 @@ private fun PlayerScrubber(
         ) {
             Text(
                 text = formatDuration(displayedPositionMs),
-                style = MaterialTheme.typography.bodySmall,
+                style = MaterialTheme.typography.labelMedium,
                 color = KaonTextSecondary
             )
             Text(
                 text = formatDuration(durationMs),
-                style = MaterialTheme.typography.bodySmall,
-                color = KaonTextSecondary
+                style = MaterialTheme.typography.labelMedium,
+                color = KaonTextTertiary
             )
         }
     }
@@ -867,17 +902,15 @@ private fun QueueItemRow(
         modifier = Modifier
             .fillMaxWidth()
             .padding(vertical = 4.dp)
-            .clip(RoundedCornerShape(8.dp))
+            .clip(RoundedCornerShape(10.dp))
             .background(if (isCurrent) KaonCardBackground else Color.Transparent)
             .padding(horizontal = 8.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         if (isCurrent) {
-            Text(
-                text = "▶",
-                color = KaonPrimary,
-                fontSize = 12.sp,
-                modifier = Modifier.width(20.dp)
+            PlayingIndicator(
+                modifier = Modifier.width(20.dp),
+                color = KaonPrimary
             )
         } else {
             Text(
@@ -908,7 +941,7 @@ private fun QueueItemRow(
                 overflow = TextOverflow.Ellipsis
             )
             Text(
-                text = "${track.displayArtist} • ${track.audioFormatLabel}",
+                text = track.displayArtist,
                 style = MaterialTheme.typography.bodySmall,
                 color = KaonTextSecondary,
                 maxLines = 1,

@@ -29,6 +29,21 @@ interface FavoriteDao {
     fun observeFavoriteTrackEntities(): Flow<List<com.kaon.music.core.data.db.entity.TrackEntity>>
 
     /**
+     * Bounded favorites for a fixed-size row (the Home feed carousel).
+     *
+     * The unbounded variant above stays for callers that genuinely need every favorite; a screen that
+     * renders a capped row asks for exactly what it draws (ARCHITECTURE.md §6).
+     */
+    @Query("""
+        SELECT t.* FROM tracks t
+        INNER JOIN favorite_tracks f ON t.track_id = f.track_id
+        WHERE t.is_missing = 0
+        ORDER BY f.added_at DESC
+        LIMIT :limit
+    """)
+    fun observeFavoriteTrackEntities(limit: Int): Flow<List<com.kaon.music.core.data.db.entity.TrackEntity>>
+
+    /**
      * Synchronous query for active favorite track entities.
      */
     @Query("""

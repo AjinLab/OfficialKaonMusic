@@ -1,4 +1,5 @@
 package com.kaon.music.core.logging
+import com.kaon.music.core.extraction.logging.Redact
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse

@@ -1,6 +1,5 @@
 package com.kaon.music.feature.settings.page
 
-import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
@@ -40,8 +39,9 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import com.kaon.music.core.data.repository.UserSettings
+import com.kaon.music.core.model.UserSettings
 import com.kaon.music.core.designsystem.theme.KaonBackground
+import com.kaon.music.core.designsystem.theme.KaonCardBackground
 import com.kaon.music.core.designsystem.theme.KaonPrimary
 import com.kaon.music.core.designsystem.theme.KaonSurfaceElevated
 import com.kaon.music.core.designsystem.theme.KaonTextPrimary
@@ -61,7 +61,6 @@ fun OnlineSettingsPage(
     onSetFanartTvApiKey: (String) -> Unit = {},
     onSetDiscogsToken: (String) -> Unit = {}
 ) {
-    BackHandler(onBack = onBack)
 
     var lastFmKeyInput by remember(settings.lastFmApiKey) { mutableStateOf(settings.lastFmApiKey) }
     var fanartTvKeyInput by remember(settings.fanartTvApiKey) { mutableStateOf(settings.fanartTvApiKey) }
@@ -190,8 +189,8 @@ fun OnlineSettingsPage(
                             singleLine = true,
                             shape = RoundedCornerShape(10.dp),
                             colors = TextFieldDefaults.colors(
-                                focusedContainerColor = Color(0xFF1B1B1F),
-                                unfocusedContainerColor = Color(0xFF1B1B1F),
+                                focusedContainerColor = KaonCardBackground,
+                                unfocusedContainerColor = KaonCardBackground,
                                 focusedIndicatorColor = KaonPrimary,
                                 unfocusedIndicatorColor = Color.Transparent,
                                 focusedTextColor = KaonTextPrimary,
@@ -224,8 +223,8 @@ fun OnlineSettingsPage(
                             singleLine = true,
                             shape = RoundedCornerShape(10.dp),
                             colors = TextFieldDefaults.colors(
-                                focusedContainerColor = Color(0xFF1B1B1F),
-                                unfocusedContainerColor = Color(0xFF1B1B1F),
+                                focusedContainerColor = KaonCardBackground,
+                                unfocusedContainerColor = KaonCardBackground,
                                 focusedIndicatorColor = KaonPrimary,
                                 unfocusedIndicatorColor = Color.Transparent,
                                 focusedTextColor = KaonTextPrimary,
@@ -258,8 +257,8 @@ fun OnlineSettingsPage(
                             singleLine = true,
                             shape = RoundedCornerShape(10.dp),
                             colors = TextFieldDefaults.colors(
-                                focusedContainerColor = Color(0xFF1B1B1F),
-                                unfocusedContainerColor = Color(0xFF1B1B1F),
+                                focusedContainerColor = KaonCardBackground,
+                                unfocusedContainerColor = KaonCardBackground,
                                 focusedIndicatorColor = KaonPrimary,
                                 unfocusedIndicatorColor = Color.Transparent,
                                 focusedTextColor = KaonTextPrimary,

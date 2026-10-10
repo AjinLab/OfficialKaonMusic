@@ -1,5 +1,14 @@
 package com.kaon.music.feature.library
+import androidx.paging.PagingSource
+import com.kaon.music.core.data.db.dao.FakePagingInvalidator
+import com.kaon.music.core.data.db.dao.TrackRow
+import com.kaon.music.core.data.db.dao.toTrackRow
+import androidx.paging.testing.asSnapshot
 
+import com.kaon.music.core.data.db.dao.FakeTrackDaoBase
+import com.kaon.music.core.data.db.dao.FakePlaylistDaoBase
+import com.kaon.music.core.data.db.dao.FakePlayEventDaoBase
+import com.kaon.music.core.data.db.dao.FakeFavoriteDaoBase
 import com.kaon.music.core.data.db.dao.FavoriteDao
 import com.kaon.music.core.data.db.dao.PlayEventDao
 import com.kaon.music.core.data.db.dao.PlaylistDao
@@ -116,7 +125,6 @@ class LibraryViewModelTest {
             )
         )
 
-        playlistRepository = PlaylistRepository(fakePlaylistDao, fakeTrackDao, fakeFavoriteDao)
 
         val dummyContext = object : android.content.ContextWrapper(null) {}
 
@@ -128,7 +136,18 @@ class LibraryViewModelTest {
                 scanner = com.kaon.music.core.data.sync.MediaStoreScanner(dummyContext),
                 trackDao = fakeTrackDao
             ),
-            playEventDao = fakePlayEventDao
+            playEventDao = fakePlayEventDao,
+            // Repository mapping now runs on Dispatchers.Default in production (ARCHITECTURE.md
+            // §5.4). runTest cannot advance the real Default dispatcher, so tests drive it on the
+            // test scheduler — the same reason computeDispatcher is injected below.
+            mappingDispatcher = mainDispatcherRule.testDispatcher
+        )
+        playlistRepository = PlaylistRepository(
+            fakePlaylistDao,
+            fakeTrackDao,
+            fakeFavoriteDao,
+            trackRepository = trackRepository,
+            mappingDispatcher = mainDispatcherRule.testDispatcher
         )
 
         val playbackFacade = PlaybackFacade(
@@ -136,10 +155,14 @@ class LibraryViewModelTest {
             trackRepository = trackRepository
         )
 
-        viewModel = LibraryViewModel(
+        val libraryController = com.kaon.music.core.data.repository.DefaultLibraryController(
             trackRepository = trackRepository,
-            playbackFacade = playbackFacade,
-            playlistRepository = playlistRepository,
+            playlistRepository = playlistRepository
+        )
+
+        viewModel = LibraryViewModel(
+            libraryController = libraryController,
+            playerController = playbackFacade,
             // Keep the sort/filter pipeline on the test dispatcher; production runs it on
             // Dispatchers.Default, which the test scheduler cannot advance.
             computeDispatcher = mainDispatcherRule.testDispatcher
@@ -161,6 +184,8 @@ class LibraryViewModelTest {
     @Test
     fun `add track to playlist updates count and playlist tracks stream`() = runTest {
         backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { viewModel.uiState.collect {} }
+        // playlistStats is WhileSubscribed, so it stays at its initial value until something collects.
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { viewModel.playlistStats.collect {} }
         viewModel.createPlaylist("Focus Beats")
         advanceUntilIdle()
 
@@ -168,18 +193,21 @@ class LibraryViewModelTest {
         viewModel.selectPlaylist(playlist)
         advanceUntilIdle()
 
-        assertEquals(0, viewModel.uiState.value.playlistTracks.size)
+        assertEquals(emptyList<Long>(), viewModel.pagedPlaylistTracks.asSnapshot().map { it.id.value })
 
-        viewModel.addTrackToPlaylist(playlist.id, 1L, "Song A", playlist.name)
+        viewModel.addTrackToPlaylist(playlist.id, com.kaon.music.core.data.model.localTrack(1L, "Song A"), "Song A", playlist.name)
         advanceUntilIdle()
 
         val updatedPlaylists = viewModel.uiState.value.playlists
         assertEquals(1, updatedPlaylists.first().trackCount)
 
-        val playlistTracks = viewModel.uiState.value.playlistTracks
+        // The member list is paged now, so it is asserted through the paging snapshot rather than
+        // through UI state, which no longer holds it.
+        val playlistTracks = viewModel.pagedPlaylistTracks.asSnapshot()
         assertEquals(1, playlistTracks.size)
-        assertEquals(1L, playlistTracks.first().id)
+        assertEquals(1L, playlistTracks.first().id.value)
         assertEquals("Song A", playlistTracks.first().title)
+        assertEquals(1, viewModel.playlistStats.value.trackCount)
     }
 
     @Test
@@ -191,23 +219,17 @@ class LibraryViewModelTest {
         val playlist = viewModel.uiState.value.playlists.first()
         viewModel.selectPlaylist(playlist)
 
-        viewModel.addTrackToPlaylist(playlist.id, 1L, "Song A", playlist.name)
-        viewModel.addTrackToPlaylist(playlist.id, 2L, "Song B", playlist.name)
+        viewModel.addTrackToPlaylist(playlist.id, com.kaon.music.core.data.model.localTrack(1L, "Song A"), "Song A", playlist.name)
+        viewModel.addTrackToPlaylist(playlist.id, com.kaon.music.core.data.model.localTrack(2L, "Song B"), "Song B", playlist.name)
         advanceUntilIdle()
 
-        val initialTracks = viewModel.uiState.value.playlistTracks
-        assertEquals(2, initialTracks.size)
-        assertEquals(1L, initialTracks[0].id)
-        assertEquals(2L, initialTracks[1].id)
+        assertEquals(listOf(1L, 2L), viewModel.pagedPlaylistTracks.asSnapshot().map { it.id.value })
 
         // Swap order
         viewModel.reorderPlaylistTracks(playlist.id, listOf(2L, 1L))
         advanceUntilIdle()
 
-        val reorderedTracks = viewModel.uiState.value.playlistTracks
-        assertEquals(2, reorderedTracks.size)
-        assertEquals(2L, reorderedTracks[0].id)
-        assertEquals(1L, reorderedTracks[1].id)
+        assertEquals(listOf(2L, 1L), viewModel.pagedPlaylistTracks.asSnapshot().map { it.id.value })
     }
 
     @Test
@@ -256,18 +278,16 @@ class LibraryViewModelTest {
         val playlist = viewModel.uiState.value.playlists.first()
         viewModel.selectPlaylist(playlist)
 
-        viewModel.addTrackToPlaylist(playlist.id, 1L, "Song A", playlist.name)
-        viewModel.addTrackToPlaylist(playlist.id, 2L, "Song B", playlist.name)
+        viewModel.addTrackToPlaylist(playlist.id, com.kaon.music.core.data.model.localTrack(1L, "Song A"), "Song A", playlist.name)
+        viewModel.addTrackToPlaylist(playlist.id, com.kaon.music.core.data.model.localTrack(2L, "Song B"), "Song B", playlist.name)
         advanceUntilIdle()
 
-        assertEquals(2, viewModel.uiState.value.playlistTracks.size)
+        assertEquals(2, viewModel.pagedPlaylistTracks.asSnapshot().size)
 
         viewModel.removeTrackFromPlaylist(playlist.id, 1L)
         advanceUntilIdle()
 
-        val remaining = viewModel.uiState.value.playlistTracks
-        assertEquals(1, remaining.size)
-        assertEquals(2L, remaining.first().id)
+        assertEquals(listOf(2L), viewModel.pagedPlaylistTracks.asSnapshot().map { it.id.value })
     }
 
     @Test
@@ -284,13 +304,24 @@ class LibraryViewModelTest {
 
 // ==================== Fake DAO Implementations for ViewModel Unit Tests ====================
 
-private class FakeVmPlaylistDao(private val fakeTrackDao: FakeVmTrackDao) : PlaylistDao {
+private class FakeVmPlaylistDao(private val fakeTrackDao: FakeVmTrackDao) : FakePlaylistDaoBase() {
     private var nextId = 1L
     val playlists = mutableListOf<PlaylistEntity>()
     val playlistTracks = mutableListOf<PlaylistTrackEntity>()
 
     private val playlistsFlow = MutableStateFlow<List<PlaylistDao.PlaylistSummary>>(emptyList())
     private val tracksFlowMap = mutableMapOf<Long, MutableStateFlow<List<TrackEntity>>>()
+    private val statsFlowMap = mutableMapOf<Long, MutableStateFlow<PlaylistDao.PlaylistStats>>()
+
+    // Stands in for Room's invalidation tracker: paged member lists must reload after a mutation.
+    private val pagingInvalidator = FakePagingInvalidator()
+
+    private fun membersOf(playlistId: Long): List<TrackEntity> {
+        val trackIds = playlistTracks.filter { it.playlistId == playlistId }
+            .sortedBy { it.position }
+            .map { it.trackId }
+        return trackIds.mapNotNull { id -> fakeTrackDao.storedTracks.find { it.trackId == id && !it.isMissing } }
+    }
 
     private fun updateFlow() {
         val withCount = playlists.map { p ->
@@ -300,11 +331,23 @@ private class FakeVmPlaylistDao(private val fakeTrackDao: FakeVmTrackDao) : Play
         playlistsFlow.value = withCount
 
         for (p in playlists) {
-            val trackIds = playlistTracks.filter { it.playlistId == p.playlistId }.sortedBy { it.position }.map { it.trackId }
-            val tracks = trackIds.mapNotNull { id -> fakeTrackDao.storedTracks.find { it.trackId == id && !it.isMissing } }
+            val tracks = membersOf(p.playlistId)
             tracksFlowMap.getOrPut(p.playlistId) { MutableStateFlow(emptyList()) }.value = tracks
+            statsFlowMap.getOrPut(p.playlistId) { MutableStateFlow(PlaylistDao.PlaylistStats(0, 0L)) }.value =
+                PlaylistDao.PlaylistStats(tracks.size, tracks.sumOf { it.durationMs })
         }
+        pagingInvalidator.invalidateAll()
     }
+
+    override fun pagingTracksForPlaylist(playlistId: Long): PagingSource<Int, TrackRow> =
+        pagingInvalidator.source { membersOf(playlistId).map { it.toTrackRow(isFavorite = false) } }
+
+    override fun observePlaylistStats(playlistId: Long): Flow<PlaylistDao.PlaylistStats> =
+        statsFlowMap.getOrPut(playlistId) { MutableStateFlow(PlaylistDao.PlaylistStats(0, 0L)) }
+
+    override suspend fun countTracksInPlaylist(playlistId: Long): Int = membersOf(playlistId).size
+
+    override suspend fun getOrderedTrackIds(playlistId: Long): List<Long> = membersOf(playlistId).map { it.trackId }
 
     override fun observeAllPlaylistsWithCount(): Flow<List<PlaylistDao.PlaylistSummary>> {
         updateFlow()
@@ -399,7 +442,7 @@ private class FakeVmPlaylistDao(private val fakeTrackDao: FakeVmTrackDao) : Play
     }
 }
 
-private class FakeVmFavoriteDao : FavoriteDao {
+private class FakeVmFavoriteDao : FakeFavoriteDaoBase() {
     val favorites = mutableSetOf<Long>()
     private val flow = MutableStateFlow<List<Long>>(emptyList())
 
@@ -422,7 +465,7 @@ private class FakeVmFavoriteDao : FavoriteDao {
     }
 }
 
-private class FakeVmTrackDao : TrackDao {
+private class FakeVmTrackDao : FakeTrackDaoBase() {
     val storedTracks = mutableListOf<TrackEntity>()
 
     override fun observeAllActiveTracks(): Flow<List<TrackEntity>> = flowOf(storedTracks.filter { !it.isMissing })
@@ -431,7 +474,7 @@ private class FakeVmTrackDao : TrackDao {
     override suspend fun getTrackById(trackId: Long): TrackEntity? = storedTracks.find { it.trackId == trackId }
     override suspend fun getTracksByIds(trackIds: List<Long>): List<TrackEntity> = storedTracks.filter { trackIds.contains(it.trackId) }
     override suspend fun getTrackByMediaStoreId(mediaStoreId: Long): TrackEntity? = storedTracks.find { it.mediaStoreId == mediaStoreId }
-    override fun searchTracks(query: String): Flow<List<TrackEntity>> = flowOf(emptyList())
+    override fun searchTracks(query: String, limit: Int): Flow<List<TrackEntity>> = flowOf(emptyList())
     override fun observeRecentlyAddedTracks(limit: Int): Flow<List<TrackEntity>> = flowOf(emptyList())
     override suspend fun getRecentlyAddedTracks(limit: Int): List<TrackEntity> = emptyList()
     override fun observeAllAlbums(): Flow<List<TrackDao.AlbumSummary>> = flowOf(emptyList())
@@ -453,13 +496,13 @@ private class FakeVmTrackDao : TrackDao {
     }
     override suspend fun updateTrack(track: TrackEntity) {}
     override suspend fun updateTracks(tracks: List<TrackEntity>) {}
-    override suspend fun reLinkTrack(trackId: Long, newMediaStoreId: Long, timestamp: Long) {}
+    override suspend fun reLinkTrack(trackId: Long, newMediaStoreId: Long, newRelativePath: String?, timestamp: Long) {}
     override suspend fun markTracksMissing(trackIds: List<Long>) {}
     override suspend fun markTracksPresent(trackIds: List<Long>, timestamp: Long) {}
     override suspend fun purgeOrphanedTracks(purgeCutoffTimestamp: Long): Int = 0
 }
 
-private class FakeVmPlayEventDao : PlayEventDao {
+private class FakeVmPlayEventDao : FakePlayEventDaoBase() {
     override suspend fun insertEvent(event: PlayEventEntity): Long = 1L
     override fun observeRecentlyPlayedTrackEntities(limit: Int): Flow<List<TrackEntity>> = flowOf(emptyList())
     override suspend fun getRecentlyPlayedTrackEntities(limit: Int): List<TrackEntity> = emptyList()

@@ -72,6 +72,7 @@ import com.kaon.music.core.data.model.Track
 import com.kaon.music.core.designsystem.component.ArtworkImage
 import com.kaon.music.core.designsystem.component.TrackItem
 import com.kaon.music.core.designsystem.theme.KaonBackground
+import com.kaon.music.core.designsystem.theme.KaonOnAccent
 import com.kaon.music.core.designsystem.theme.KaonPrimary
 import com.kaon.music.core.designsystem.theme.KaonSurfaceElevated
 import com.kaon.music.core.designsystem.theme.KaonTextPrimary
@@ -230,7 +231,7 @@ fun SearchScreen(
                             containerColor = KaonSurfaceElevated,
                             labelColor = KaonTextSecondary,
                             selectedContainerColor = KaonPrimary,
-                            selectedLabelColor = Color(0xFF141418)
+                            selectedLabelColor = KaonOnAccent
                         ),
                         border = null,
                         shape = RoundedCornerShape(16.dp)
@@ -375,7 +376,7 @@ fun SearchScreen(
                                         albumId = top.album?.albumId ?: 0L,
                                         album = top.album?.title,
                                         artist = top.album?.artist,
-                                        artworkUri = top.thumbnailUri,
+                                        model = top.thumbnailUrl,
                                         sizeBucket = SizeBucket.THUMBNAIL,
                                         modifier = Modifier.size(64.dp),
                                         cornerRadius = 10.dp
@@ -415,7 +416,7 @@ fun SearchScreen(
                                             Icon(
                                                 imageVector = Icons.Default.PlayArrow,
                                                 contentDescription = "Play",
-                                                tint = Color(0xFF141418),
+                                                tint = KaonOnAccent,
                                                 modifier = Modifier.size(24.dp)
                                             )
                                         }
@@ -633,10 +634,10 @@ fun SearchScreen(
                                         color = KaonSurfaceElevated,
                                         modifier = Modifier.size(130.dp)
                                     ) {
-                                        if (playlist.thumbnailUri != null) {
+                                        if (playlist.thumbnailUrl != null) {
                                             ArtworkImage(
                                                 albumId = 0L,
-                                                artworkUri = playlist.thumbnailUri,
+                                                model = playlist.thumbnailUrl,
                                                 sizeBucket = SizeBucket.FULL,
                                                 modifier = Modifier.fillMaxSize(),
                                                 cornerRadius = 10.dp
@@ -687,14 +688,14 @@ fun SearchScreen(
 
                     itemsIndexed(
                         items = uiState.matchingTracks,
-                        key = { _, track -> "local_${track.id}" }
+                        key = { _, track -> "local_${track.stableKey}" }
                     ) { _, track ->
                         TrackItem(
                             track = track,
                             isPlaying = uiState.isPlaying,
-                            isCurrent = track.id == uiState.activeTrackId,
+                            isCurrent = track.id.value == uiState.activeTrackId,
                             onClick = { viewModel.playTrack(track) },
-                            onFavoriteToggle = { viewModel.toggleFavorite(track.id) },
+                            onFavoriteToggle = { viewModel.toggleFavorite(track) },
                             onPlayNext = { viewModel.playNext(track) },
                             onAddToQueue = { viewModel.addToQueue(track) },
                             onAddToPlaylist = { trackForAddToPlaylist = track }
@@ -733,6 +734,33 @@ fun SearchScreen(
                     }
                 }
 
+                // Search-failed banner: a network failure must not look like "no results"
+                // (Phase 6A §12). Shown only when there is a query and we are online.
+                if (uiState.onlineSearchFailed && uiState.searchQuery.isNotBlank()) {
+                    item {
+                        Surface(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 20.dp, vertical = 6.dp),
+                            shape = RoundedCornerShape(8.dp),
+                            color = KaonSurfaceElevated
+                        ) {
+                            Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
+                                Text(
+                                    text = "Search failed",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = KaonTextPrimary
+                                )
+                                Text(
+                                    text = "Check your connection and try again.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = KaonTextSecondary
+                                )
+                            }
+                        }
+                    }
+                }
+
                 // Online Songs list (YouTube Music)
                 if (uiState.onlineTracks.isNotEmpty()) {
                     item {
@@ -760,14 +788,14 @@ fun SearchScreen(
 
                     itemsIndexed(
                         items = uiState.onlineTracks,
-                        key = { _, track -> "yt_${track.youtubeVideoId ?: track.id}" }
+                        key = { _, track -> "yt_${track.stableKey}" }
                     ) { _, track ->
                         TrackItem(
                             track = track,
                             isPlaying = uiState.isPlaying,
-                            isCurrent = track.id == uiState.activeTrackId,
+                            isCurrent = track.id.value == uiState.activeTrackId,
                             onClick = { viewModel.playTrack(track) },
-                            onFavoriteToggle = { viewModel.toggleFavorite(track.id) },
+                            onFavoriteToggle = { viewModel.toggleFavorite(track) },
                             onPlayNext = { viewModel.playNext(track) },
                             onAddToQueue = { viewModel.addToQueue(track) },
                             onAddToPlaylist = { trackForAddToPlaylist = track },

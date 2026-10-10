@@ -6,14 +6,15 @@ import androidx.lifecycle.viewModelScope
 import com.kaon.music.core.data.model.LyricsResult
 import com.kaon.music.core.data.model.Track
 import com.kaon.music.core.data.model.TrackMetadata
-import com.kaon.music.core.data.repository.MetadataRepository
-import com.kaon.music.core.data.repository.PlaylistRepository
-import com.kaon.music.core.data.repository.TrackRepository
-import com.kaon.music.core.playback.PlaybackFacade
+import com.kaon.music.core.model.KaonError
+import com.kaon.music.core.model.LibraryController
+import com.kaon.music.core.model.PlayerController
+import com.kaon.music.core.playback.PlaybackEvent
 import com.kaon.music.core.playback.model.NowPlaying
 import com.kaon.music.core.playback.model.PlaybackProgress
 import com.kaon.music.core.playback.model.PlaybackQueue
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -26,47 +27,39 @@ import kotlinx.coroutines.launch
 /**
  * Player screen state holder.
  *
- * ARCHITECTURE.md §3.2: exposes [nowPlaying], [queue], and [progress] as three separate flows. The
- * player is the only screen permitted to observe [progress]; screens that only need to know which
- * track is active observe [nowPlaying].
+ * ARCHITECTURE.md §3.2 and capability controller pattern: interacts with the playback engine
+ * and media catalog through [PlayerController] and [LibraryController], never touching repositories
+ * or platform media sessions directly.
  */
 class PlayerViewModel(
-    private val playbackFacade: PlaybackFacade,
-    private val trackRepository: TrackRepository,
-    private val playlistRepository: PlaylistRepository? = null,
-    private val metadataRepository: MetadataRepository? = null,
+    private val playerController: PlayerController,
+    private val libraryController: LibraryController? = null,
     private val savedStateHandle: SavedStateHandle = SavedStateHandle()
 ) : ViewModel() {
 
-    val nowPlaying: StateFlow<NowPlaying> = playbackFacade.nowPlaying
+    val nowPlaying: StateFlow<NowPlaying> = playerController.nowPlaying
         .stateIn(
             scope = viewModelScope,
             started = SharingStarted.WhileSubscribed(5000),
             initialValue = NowPlaying()
         )
 
-    val queue: StateFlow<PlaybackQueue> = playbackFacade.queue
+    val queue: StateFlow<PlaybackQueue> = playerController.queue
         .stateIn(
             scope = viewModelScope,
             started = SharingStarted.WhileSubscribed(5000),
             initialValue = PlaybackQueue()
         )
 
-    /**
-     * Ticks every 500 ms during playback. Read only where progress is drawn — never fold this into a
-     * screen-level state object.
-     */
-    val progress: StateFlow<PlaybackProgress> = playbackFacade.progress
-        .stateIn(
-            scope = viewModelScope,
-            started = SharingStarted.WhileSubscribed(5000),
-            initialValue = PlaybackProgress()
-        )
+    val progress: StateFlow<PlaybackProgress> = playerController.progress
 
-    /**
-     * Survives configuration change and process death via [SavedStateHandle] (ARCHITECTURE.md §5.5).
-     * Previously a plain MutableStateFlow, so rotating with the full player open collapsed it.
-     */
+    val playbackEvents: Flow<KaonError> =
+        playerController.oneShotEvents.map { event ->
+            when (event) {
+                is PlaybackEvent.TrackUnplayable -> KaonError.PlaybackFailed(trackTitle = event.trackTitle)
+            }
+        }
+
     val isFullPlayerExpanded: StateFlow<Boolean> =
         savedStateHandle.getStateFlow(KEY_FULL_PLAYER_EXPANDED, false)
 
@@ -89,16 +82,13 @@ class PlayerViewModel(
 
     init {
         viewModelScope.launch {
-            playbackFacade.nowPlaying
+            playerController.nowPlaying
                 .map { it.currentTrack }
                 .distinctUntilChanged()
                 .collect { track ->
                     if (track != null) {
                         fetchLyricsAndMetadata(track)
                     } else {
-                        // Losing the current track (queue emptied, last item removed) leaves the
-                        // full player with nothing to show, so collapse instead of keeping a
-                        // stale expanded flag that reappears with the next track.
                         collapseFullPlayer()
                         lyricsFetchJob?.cancel()
                         _lyricsState.value = null
@@ -110,15 +100,13 @@ class PlayerViewModel(
     }
 
     fun fetchLyricsAndMetadata(track: Track) {
-        val metaRepo = metadataRepository ?: return
+        val libCtrl = libraryController ?: return
         lyricsFetchJob?.cancel()
         lyricsFetchJob = viewModelScope.launch {
             _isLoadingLyrics.value = true
             try {
-                val lyrics = metaRepo.getLyrics(track)
+                val lyrics = libCtrl.fetchLyricsAndMetadata(track)
                 _lyricsState.value = lyrics
-                val metadata = metaRepo.getTrackMetadata(track)
-                _trackMetadataState.value = metadata
             } catch (e: Exception) {
                 _lyricsState.value = null
                 _trackMetadataState.value = null
@@ -160,55 +148,54 @@ class PlayerViewModel(
     fun toggleLyricsSheet() = setLyricsSheetVisible(!isLyricsSheetVisible.value)
 
     fun togglePlayPause() {
-        playbackFacade.togglePlayPause()
+        playerController.togglePlayPause()
     }
 
     fun skipNext() {
-        playbackFacade.skipNext()
+        playerController.skipNext()
     }
 
     fun skipPrevious() {
-        playbackFacade.skipPrevious()
+        playerController.skipPrevious()
     }
 
     fun seekTo(positionMs: Long) {
-        playbackFacade.seekTo(positionMs)
+        playerController.seekTo(positionMs)
     }
 
     fun toggleShuffle() {
-        playbackFacade.toggleShuffle()
+        playerController.toggleShuffle()
     }
 
     fun cycleRepeatMode() {
-        playbackFacade.cycleRepeatMode()
+        playerController.cycleRepeatMode()
     }
 
     fun removeQueueItem(index: Int) {
-        playbackFacade.removeQueueItem(index)
+        playerController.removeQueueItem(index)
     }
 
     fun moveQueueItem(fromIndex: Int, toIndex: Int) {
-        playbackFacade.moveQueueItem(fromIndex, toIndex)
+        playerController.moveQueueItem(fromIndex, toIndex)
     }
 
     fun clearQueue() {
-        playbackFacade.clearQueue()
+        playerController.clearQueue()
         collapseFullPlayer()
     }
 
-    fun toggleFavorite(trackId: Long) {
+    fun toggleFavorite(track: Track) {
         viewModelScope.launch {
-            trackRepository.toggleFavorite(trackId)
+            libraryController?.toggleFavorite(track)
         }
     }
 
     fun saveQueueAsPlaylist(name: String, onComplete: () -> Unit = {}) {
-        val repo = playlistRepository ?: return
-        val currentQueue = playbackFacade.queue.value.tracks
+        val libCtrl = libraryController ?: return
+        val currentQueue = playerController.queue.value.tracks
         if (currentQueue.isEmpty()) return
         viewModelScope.launch {
-            val playlistId = repo.createPlaylist(name)
-            repo.addTracksToPlaylist(playlistId, currentQueue.map { it.id })
+            libCtrl.saveQueueAsPlaylist(name, currentQueue)
             onComplete()
         }
     }

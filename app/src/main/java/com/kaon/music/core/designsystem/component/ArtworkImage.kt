@@ -30,6 +30,7 @@ import coil3.request.crossfade
 import com.kaon.music.app.KaonApplication
 import com.kaon.music.core.artwork.ArtworkResolver
 import com.kaon.music.core.artwork.SizeBucket
+import com.kaon.music.core.data.MediaLocatorUri
 import com.kaon.music.core.data.model.Track
 import com.kaon.music.core.designsystem.theme.KaonPrimary
 import com.kaon.music.core.designsystem.theme.KaonTrackPlaceholder
@@ -57,7 +58,7 @@ fun ArtworkImage(
     val effectiveArtist = (artistName ?: track?.artist ?: artist).orEmpty().trim()
     val effectiveAlbum = (track?.album ?: album).orEmpty().trim()
     val effectiveAlbumId = track?.albumId ?: albumId
-    val effectiveArtworkUri = artworkUri ?: (track?.contentUri.takeIf { track?.source == "YOUTUBE" })
+    val effectiveArtworkUri = artworkUri ?: track?.let { MediaLocatorUri.artworkUri(it.artwork) }
 
     val shape = if (isArtist && cornerRadius >= 20.dp) CircleShape else RoundedCornerShape(cornerRadius)
 

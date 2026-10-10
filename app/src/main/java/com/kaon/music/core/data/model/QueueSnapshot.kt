@@ -3,10 +3,9 @@ package com.kaon.music.core.data.model
 /**
  * Persisted playback queue.
  *
- * [entries] carries enough identity to rebuild a Media3 timeline without a database row per item.
- * That matters for YouTube tracks: they are not inserted into the `tracks` table (see
- * ARCHITECTURE.md §6 — unifying that is migration phase 4), so a restore keyed only on `trackId`
- * silently dropped every streamed item in the queue.
+ * Every entry is now a canonical [TrackId]: a streamed track is a real `tracks` row from the moment it
+ * is enqueued, so restoring a mixed local + YouTube queue is one id lookup rather than a parse of
+ * provider identity out of a serialized string (ARCHITECTURE.md §3.1).
  */
 data class QueueSnapshot(
     val entries: List<QueueEntry>,
@@ -16,19 +15,16 @@ data class QueueSnapshot(
     val repeatMode: Int,
     val timestamp: Long = System.currentTimeMillis()
 ) {
-    val trackIds: List<Long> get() = entries.map { it.trackId }
+    val trackIds: List<TrackId> get() = entries.map { it.trackId }
 }
 
 /**
  * One queue position.
  *
- * [youtubeVideoId] is the persisted provider identity. It is what lets a cold start resolve a
- * streamed track directly instead of re-searching for it — the durable half of what WAVE achieves
- * with its `trackId -> videoId` Hive box, without a second persistence technology.
+ * Identity only. Where the audio comes from is a property of the referenced row, so a restore reads
+ * the locator from the database instead of re-deriving it here — the same entry works for a local
+ * file, a YouTube stream and a future download.
  */
 data class QueueEntry(
-    val trackId: Long,
-    val youtubeVideoId: String? = null
-) {
-    val isRemote: Boolean get() = !youtubeVideoId.isNullOrBlank()
-}
+    val trackId: TrackId
+)

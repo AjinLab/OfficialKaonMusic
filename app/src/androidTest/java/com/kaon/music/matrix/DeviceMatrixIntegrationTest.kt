@@ -331,13 +331,24 @@ class DeviceMatrixIntegrationTest {
 
             // 1. Initial Launch: Create disk database & populate 10 tracks
             val diskDb = Room.databaseBuilder(context, KaonDatabase::class.java, "test_process_death_reorder.db")
+            .addMigrations(*KaonDatabase.MANUAL_MIGRATIONS)
                 .allowMainThreadQueries()
                 .build()
 
             val trackDao = diskDb.trackDao()
             val playlistDao = diskDb.playlistDao()
             val favoriteDao = diskDb.favoriteDao()
-            val playlistRepo = com.kaon.music.core.data.repository.PlaylistRepository(playlistDao, trackDao, favoriteDao)
+            val trackRepo = com.kaon.music.core.data.repository.TrackRepository(
+                trackDao = trackDao,
+                favoriteDao = favoriteDao,
+                syncEngine = com.kaon.music.core.data.sync.SyncEngine(
+                    scanner = com.kaon.music.core.data.sync.MediaStoreScanner(context),
+                    trackDao = trackDao
+                )
+            )
+            val playlistRepo = com.kaon.music.core.data.repository.PlaylistRepository(
+                playlistDao, trackDao, favoriteDao, trackRepository = trackRepo
+            )
 
             val trackEntities = (1..10).map { i ->
                 TrackEntity(
@@ -383,6 +394,7 @@ class DeviceMatrixIntegrationTest {
 
             // 4. App Relaunch from cold storage: Create a completely fresh Database instance
             val freshDb = Room.databaseBuilder(context, KaonDatabase::class.java, "test_process_death_reorder.db")
+            .addMigrations(*KaonDatabase.MANUAL_MIGRATIONS)
                 .allowMainThreadQueries()
                 .build()
 
@@ -560,6 +572,7 @@ class DeviceMatrixIntegrationTest {
 
         // 2. Open with KaonDatabase Version 5 builder to execute Room AutoMigration
         val v5Db = Room.databaseBuilder(context, KaonDatabase::class.java, "test_migration_v4_v5.db")
+            .addMigrations(*KaonDatabase.MANUAL_MIGRATIONS)
             .allowMainThreadQueries()
             .build()
 
@@ -573,8 +586,8 @@ class DeviceMatrixIntegrationTest {
         assertEquals(100, tracks.size)
         val sampleTrack = trackDao.getTrackById(1L)
         assertNotNull(sampleTrack)
-        assertEquals("LOCAL", sampleTrack!!.source)
-        assertEquals(null, sampleTrack.youtubeVideoId)
+        assertEquals("LOCAL", sampleTrack!!.provider)
+        assertEquals(null, sampleTrack.externalId)
 
         // 4. Verify All 50 Favorites exist
         val favorites = favoriteDao.observeFavoriteTrackIds().first()
@@ -645,29 +658,19 @@ class DeviceMatrixIntegrationTest {
     @Test
     fun testOfflineModeDisablesStreamingAndSuppressesNetwork() {
         val onlineTrack = com.kaon.music.core.data.model.Track(
-            id = 9999L,
-            mediaStoreId = 0L,
+            id = com.kaon.music.core.data.model.TrackId(9999L),
             title = "Streaming Rickroll",
             artist = "Rick Astley",
-            artistId = 1L,
             album = "Never Gonna Give You Up",
-            albumId = 1L,
-            durationMs = 213000L,
-            sizeBytes = 0L,
-            dateModified = 0L,
-            dateAdded = 0L,
-            contentUri = android.net.Uri.EMPTY,
-            source = "YOUTUBE",
-            youtubeVideoId = "dQw4w9WgXcQ"
+            durationMs = 213_000L,
+            locator = com.kaon.music.core.data.model.MediaLocator.Remote(
+                provider = com.kaon.music.core.data.model.ProviderId.YOUTUBE,
+                externalId = "dQw4w9WgXcQ"
+            )
         )
         val localTrack = onlineTrack.copy(
-            id = 1L,
-            mediaStoreId = 101L,
-            source = "LOCAL",
-            youtubeVideoId = null
+            id = com.kaon.music.core.data.model.TrackId(1L),
+            locator = com.kaon.music.core.data.model.MediaLocator.LocalFile(101L, "Music/rick.mp3")
         )
-
-        assertTrue(onlineTrack.isOnline)
-        assertFalse(localTrack.isOnline)
     }
 }

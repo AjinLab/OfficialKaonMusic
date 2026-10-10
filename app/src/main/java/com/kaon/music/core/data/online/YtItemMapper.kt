@@ -1,10 +1,14 @@
 package com.kaon.music.core.data.online
 
-import android.net.Uri
 import com.kaon.music.core.data.model.Album
 import com.kaon.music.core.data.model.Artist
+import com.kaon.music.core.data.model.ArtworkRef
+import com.kaon.music.core.data.model.AudioSpec
+import com.kaon.music.core.data.model.MediaLocator
 import com.kaon.music.core.data.model.Playlist
+import com.kaon.music.core.data.model.ProviderId
 import com.kaon.music.core.data.model.Track
+import com.kaon.music.core.data.model.TrackId
 import com.metrolist.innertube.models.AlbumItem
 import com.metrolist.innertube.models.ArtistItem
 import com.metrolist.innertube.models.PlaylistItem
@@ -12,32 +16,34 @@ import com.metrolist.innertube.models.SongItem
 import com.metrolist.innertube.models.YTItem
 
 /**
- * Mapper layer isolating KaonMusic domain models from InnerTube API models.
+ * Mapper isolating Kaon's domain models from InnerTube DTOs.
+ *
+ * Every track this produces carries [TrackId.UNSAVED] plus a `MediaLocator.Remote` holding the real
+ * provider identity. The previous version invented an id from `song.id.hashCode().toLong()` — a 32-bit
+ * value that collides and cannot be reversed, and which no `tracks` row ever had. Anything that needs
+ * a durable reference (favorite, playlist, history, queue) calls
+ * `TrackRepository.ensurePersisted`, and Room assigns the id then (ARCHITECTURE.md §3.1).
+ *
+ * `Album`/`Artist` still carry derived ids because they are display-only aggregates here with no Room
+ * row and no user data pointing at them; that is a Phase 5+ concern, not identity for a playable item.
  */
 object YtItemMapper {
 
     fun songItemToTrack(song: SongItem): Track {
-        val stableId = song.id.hashCode().toLong()
         val artistNames = song.artists.joinToString(", ") { it.name }
-        val durationMs = (song.duration ?: 0) * 1000L
-
         return Track(
-            id = stableId,
-            mediaStoreId = 0L,
+            id = TrackId.UNSAVED,
             title = song.title,
             artist = artistNames.ifBlank { "Unknown Artist" },
-            artistId = 0L,
             album = song.album?.name ?: "Single",
-            albumId = 0L,
-            durationMs = durationMs,
-            sizeBytes = 0L,
-            dateModified = System.currentTimeMillis(),
-            dateAdded = System.currentTimeMillis(),
-            contentUri = song.thumbnail?.let { Uri.parse(it) },
-            isFavorite = false,
-            isMissing = false,
-            source = "YOUTUBE",
-            youtubeVideoId = song.id
+            durationMs = (song.duration ?: 0) * 1000L,
+            locator = MediaLocator.Remote(provider = ProviderId.YOUTUBE, externalId = song.id),
+            audio = AudioSpec.UNKNOWN,
+            // The thumbnail is artwork, never a playback location: that conflation is what Phase 4
+            // removes (spec §8).
+            artwork = song.thumbnail?.let { ArtworkRef.RemoteUrl(it) },
+            dateModified = 0L,
+            dateAdded = 0L
         )
     }
 
@@ -81,7 +87,7 @@ object YtItemMapper {
             title = playlist.title,
             author = playlist.author?.name ?: "YouTube Music",
             songCountText = playlist.songCountText,
-            thumbnailUri = playlist.thumbnail?.let { Uri.parse(it) }
+            thumbnailUrl = playlist.thumbnail
         )
     }
 
@@ -96,7 +102,7 @@ object YtItemMapper {
                     title = track.title,
                     subtitle = subtitle,
                     type = type,
-                    thumbnailUri = track.contentUri,
+                    thumbnailUrl = (track.artwork as? ArtworkRef.RemoteUrl)?.url,
                     track = track
                 )
             }
@@ -108,7 +114,7 @@ object YtItemMapper {
                     title = album.title,
                     subtitle = subtitle,
                     type = com.kaon.music.core.data.model.TopResultType.ALBUM,
-                    thumbnailUri = item.thumbnail?.let { Uri.parse(it) },
+                    thumbnailUrl = item.thumbnail,
                     album = album
                 )
             }
@@ -120,7 +126,7 @@ object YtItemMapper {
                     title = artist.name,
                     subtitle = subtitle,
                     type = com.kaon.music.core.data.model.TopResultType.ARTIST,
-                    thumbnailUri = item.thumbnail?.let { Uri.parse(it) },
+                    thumbnailUrl = item.thumbnail,
                     artist = artist
                 )
             }
@@ -132,7 +138,7 @@ object YtItemMapper {
                     title = pl.title,
                     subtitle = subtitle,
                     type = com.kaon.music.core.data.model.TopResultType.PLAYLIST,
-                    thumbnailUri = pl.thumbnailUri,
+                    thumbnailUrl = pl.thumbnailUrl,
                     playlist = pl
                 )
             }

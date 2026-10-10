@@ -14,11 +14,12 @@ import androidx.media3.session.SessionToken
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
 import com.google.common.util.concurrent.MoreExecutors
+import com.kaon.music.core.data.model.ProviderId
 import com.kaon.music.core.data.model.Track
 import com.kaon.music.core.data.repository.SettingsRepository
 import com.kaon.music.core.data.repository.TrackRepository
-import com.kaon.music.core.online.AudioQuality
-import com.kaon.music.core.online.AudioType
+import com.kaon.music.core.extraction.model.AudioQuality
+import com.kaon.music.core.extraction.model.AudioType
 import com.kaon.music.core.playback.model.NowPlaying
 import com.kaon.music.core.playback.model.PlaybackProgress
 import com.kaon.music.core.playback.model.PlaybackQueue
@@ -38,16 +39,20 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import com.kaon.music.core.model.PlayerController
 import timber.log.Timber
 
 sealed interface PlaybackEvent {
     data class TrackUnplayable(val trackTitle: String) : PlaybackEvent
 }
 
+
+
 /**
  * Process-scoped playback facade — the only way UI reaches Media3.
  *
  * ARCHITECTURE.md §3.2 and §4:
+ * - Implements [PlayerController] to provide capability boundaries to UI layers.
  * - Exposes three flows partitioned by change frequency ([nowPlaying], [queue], [progress]) rather
  *   than one object mixing 500 ms position ticks with the whole queue.
  * - Derives state from Media3 callbacks. It never writes state it did not observe from the player,
@@ -59,17 +64,18 @@ class PlaybackFacade(
     private val context: Context,
     private val trackRepository: TrackRepository,
     settingsRepository: SettingsRepository? = null
-) {
+) : PlayerController {
+
     private val facadeScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
 
     private val _nowPlaying = MutableStateFlow(NowPlaying())
-    val nowPlaying: StateFlow<NowPlaying> = _nowPlaying.asStateFlow()
+    override val nowPlaying: StateFlow<NowPlaying> = _nowPlaying.asStateFlow()
 
     private val _queue = MutableStateFlow(PlaybackQueue())
-    val queue: StateFlow<PlaybackQueue> = _queue.asStateFlow()
+    override val queue: StateFlow<PlaybackQueue> = _queue.asStateFlow()
 
     private val _progress = MutableStateFlow(PlaybackProgress())
-    val progress: StateFlow<PlaybackProgress> = _progress.asStateFlow()
+    override val progress: StateFlow<PlaybackProgress> = _progress.asStateFlow()
 
     @androidx.annotation.VisibleForTesting
     internal fun updateNowPlayingForTesting(state: NowPlaying) {
@@ -87,7 +93,7 @@ class PlaybackFacade(
     }
 
     private val _oneShotEvents = MutableSharedFlow<PlaybackEvent>(extraBufferCapacity = 1)
-    val oneShotEvents: SharedFlow<PlaybackEvent> = _oneShotEvents.asSharedFlow()
+    override val oneShotEvents: SharedFlow<PlaybackEvent> = _oneShotEvents.asSharedFlow()
 
     private var controllerFuture: ListenableFuture<MediaController>? = null
     private var mediaController: MediaController? = null
@@ -97,6 +103,7 @@ class PlaybackFacade(
     private var preResolveEnabled = true
     private var streamingQuality: AudioQuality = AudioQuality.AUTO
     private var preferredAudioType: AudioType = AudioType.AUTO
+    private var wifiOnlyStreaming = false
 
     init {
         // The settings repository is injected (ARCHITECTURE.md §4) rather than constructed here;
@@ -108,6 +115,7 @@ class PlaybackFacade(
                         preResolveEnabled = settings.preResolveNextTracks
                         streamingQuality = settings.streamingQuality
                         preferredAudioType = settings.preferredAudioType
+                        wifiOnlyStreaming = settings.wifiOnlyStreaming
                     }
                 } catch (e: Throwable) {
                     Timber.tag("PlaybackFacade").w(e, "Settings collection stopped")
@@ -290,7 +298,7 @@ class PlaybackFacade(
         mediaController?.pause()
     }
 
-    fun togglePlayPause() {
+    override fun togglePlayPause() {
         val controller = mediaController ?: return
         if (controller.isPlaying) {
             controller.pause()
@@ -299,15 +307,15 @@ class PlaybackFacade(
         }
     }
 
-    fun skipNext() {
+    override fun skipNext() {
         mediaController?.seekToNextMediaItem()
     }
 
-    fun skipPrevious() {
+    override fun skipPrevious() {
         mediaController?.seekToPreviousMediaItem()
     }
 
-    fun seekTo(positionMs: Long) {
+    override fun seekTo(positionMs: Long) {
         val controller = mediaController ?: return
         controller.seekTo(positionMs)
         // Reading straight back from the player keeps this an observation rather than an optimistic
@@ -321,16 +329,16 @@ class PlaybackFacade(
      * Identical-queue detection: if the tapped context matches the current queue, seek instead of
      * rebuilding the timeline, which would otherwise restart the currently playing item.
      */
-    fun playTrack(track: Track, queue: List<Track>) {
+    override fun playTrack(track: Track, queue: List<Track>) {
         val controller = mediaController ?: return
         if (queue.isEmpty()) return
 
         val currentQueue = _queue.value.tracks
         val isIdenticalQueue = currentQueue.isNotEmpty() &&
                 currentQueue.size == queue.size &&
-                currentQueue.indices.all { i -> currentQueue[i].id == queue[i].id }
+                currentQueue.indices.all { i -> currentQueue[i].stableKey == queue[i].stableKey }
 
-        val targetIndex = queue.indexOfFirst { it.id == track.id }.coerceAtLeast(0)
+        val targetIndex = queue.indexOfFirst { it.stableKey == track.stableKey }.coerceAtLeast(0)
 
         if (isIdenticalQueue) {
             if (controller.currentMediaItemIndex != targetIndex) {
@@ -349,7 +357,7 @@ class PlaybackFacade(
         // setMediaItems and identical-queue seeks), using the player's shuffle-aware next index.
     }
 
-    fun playQueue(queue: List<Track>, startIndex: Int = 0) {
+    override fun playQueue(queue: List<Track>, startIndex: Int) {
         val controller = mediaController ?: return
         if (queue.isEmpty()) return
 
@@ -383,11 +391,15 @@ class PlaybackFacade(
         preResolutionJob = facadeScope.launch {
             val nextItem = runCatching { controller.getMediaItemAt(nextIndex) }.getOrNull() ?: return@launch
             val nextTrack = resolveTrack(nextItem) ?: return@launch
-            if (nextTrack.source == "YOUTUBE" && !nextTrack.youtubeVideoId.isNullOrBlank()) {
+            val externalId = nextTrack.externalId
+            if (nextTrack.provider == ProviderId.YOUTUBE && !externalId.isNullOrBlank()) {
                 YouTubeStreamResolver.preResolve(
-                    videoId = nextTrack.youtubeVideoId,
+                    videoId = externalId,
                     quality = streamingQuality,
-                    audioType = preferredAudioType
+                    audioType = preferredAudioType,
+                    // Same facts the foreground resolve will use: a warm entry only pays off when
+                    // the cache key matches, and a prefetch must not stream around the Wi-Fi gate.
+                    wifiOnly = wifiOnlyStreaming
                 )
             }
         }
@@ -396,7 +408,7 @@ class PlaybackFacade(
     /**
      * Granular queue mutation: Add to end of queue without restarting playback.
      */
-    fun enqueue(track: Track) {
+    override fun enqueue(track: Track) {
         val controller = mediaController ?: return
         controller.addMediaItem(track.toMediaItem())
     }
@@ -404,7 +416,7 @@ class PlaybackFacade(
     /**
      * Granular queue mutation: Play next after currently playing item.
      */
-    fun playNext(track: Track) {
+    override fun playNext(track: Track) {
         val controller = mediaController ?: return
         val nextIndex = (controller.currentMediaItemIndex + 1).coerceAtMost(controller.mediaItemCount)
         controller.addMediaItem(nextIndex, track.toMediaItem())
@@ -413,7 +425,7 @@ class PlaybackFacade(
     /**
      * Granular queue mutation: Move item in timeline.
      */
-    fun moveQueueItem(fromIndex: Int, toIndex: Int) {
+    override fun moveQueueItem(fromIndex: Int, toIndex: Int) {
         val controller = mediaController ?: return
         if (fromIndex in 0 until controller.mediaItemCount && toIndex in 0 until controller.mediaItemCount) {
             controller.moveMediaItem(fromIndex, toIndex)
@@ -424,7 +436,7 @@ class PlaybackFacade(
      * Granular queue mutation: Remove item from timeline.
      * Removing current item advances seamlessly (M2 Failure matrix #13).
      */
-    fun removeQueueItem(index: Int) {
+    override fun removeQueueItem(index: Int) {
         val controller = mediaController ?: return
         if (index in 0 until controller.mediaItemCount) {
             controller.removeMediaItem(index)
@@ -438,19 +450,19 @@ class PlaybackFacade(
      * state arrives through the listeners like any other transport change rather than being written
      * here (ARCHITECTURE.md §4).
      */
-    fun clearQueue() {
+    override fun clearQueue() {
         val controller = mediaController ?: return
         preResolutionJob?.cancel()
         controller.stop()
         controller.clearMediaItems()
     }
 
-    fun toggleShuffle() {
+    override fun toggleShuffle() {
         val controller = mediaController ?: return
         controller.shuffleModeEnabled = !controller.shuffleModeEnabled
     }
 
-    fun cycleRepeatMode() {
+    override fun cycleRepeatMode() {
         val controller = mediaController ?: return
         val nextMode = when (controller.repeatMode) {
             Player.REPEAT_MODE_OFF -> Player.REPEAT_MODE_ALL
@@ -476,66 +488,18 @@ class PlaybackFacade(
         facadeScope.cancel()
     }
 
-    private fun Track.toMediaItem(): MediaItem {
-        val uri = when {
-            source == "YOUTUBE" && !youtubeVideoId.isNullOrBlank() -> Uri.parse("youtube://$youtubeVideoId")
-            else -> contentUri
-        }
-        val builder = MediaItem.Builder()
-            .setMediaId(id.toString())
-            .setUri(uri)
-        return builder.setMediaMetadata(
-                MediaMetadata.Builder()
-                    .setTitle(title)
-                    .setArtist(artist)
-                    .setAlbumTitle(album)
-                    .setArtworkUri(contentUri.takeIf { source == "YOUTUBE" })
-                    .setExtras(Bundle().apply {
-                        putLong(MediaItemExtras.MEDIA_STORE_ID, mediaStoreId)
-                        putString(MediaItemExtras.SOURCE, source)
-                        putString(MediaItemExtras.YOUTUBE_VIDEO_ID, youtubeVideoId)
-                        putString(MediaItemExtras.MIME_TYPE, mimeType)
-                        putLong(MediaItemExtras.ALBUM_ID, albumId)
-                        putLong(MediaItemExtras.DURATION_MS, durationMs)
-                        putLong(MediaItemExtras.SIZE_BYTES, sizeBytes)
-                    })
-                    .build()
-            )
-            .build()
-    }
-
     /**
-     * Online search results are intentionally not inserted into the local library.
-     * Media3 still carries their complete metadata, so the UI must resolve from
-     * that metadata when Room has no matching row.
+     * Resolves a `MediaItem` back to a [Track].
+     *
+     * Room first: a persisted row is authoritative and carries favorite state. A track that has no row
+     * yet (an unsaved search result) is reconstructed from the item's extras, which is why
+     * [toMediaItem] writes provider identity into them.
      */
     private suspend fun resolveTrack(mediaItem: MediaItem): Track? {
-        val id = mediaItem.mediaId.toLongOrNull() ?: return null
-        trackRepository.getTrackById(id)?.let { return it }
-
-        val metadata = mediaItem.mediaMetadata
-        val extras = metadata.extras
-        val uri = mediaItem.localConfiguration?.uri
-        val source = extras?.getString(MediaItemExtras.SOURCE)
-            ?: if (uri?.scheme == "youtube") MediaItemExtras.SOURCE_YOUTUBE else MediaItemExtras.SOURCE_LOCAL
-        val youtubeVideoId = extras?.getString(MediaItemExtras.YOUTUBE_VIDEO_ID)
-            ?: uri?.takeIf { it.scheme == "youtube" }?.schemeSpecificPart
-
-        return Track(
-            id = id,
-            mediaStoreId = extras?.getLong(MediaItemExtras.MEDIA_STORE_ID, 0L) ?: 0L,
-            title = metadata.title?.toString().orEmpty(),
-            artist = metadata.artist?.toString().orEmpty(),
-            album = metadata.albumTitle?.toString().orEmpty(),
-            albumId = extras?.getLong(MediaItemExtras.ALBUM_ID, 0L) ?: 0L,
-            durationMs = extras?.getLong(MediaItemExtras.DURATION_MS, 0L) ?: 0L,
-            sizeBytes = extras?.getLong(MediaItemExtras.SIZE_BYTES, 0L) ?: 0L,
-            dateModified = 0L,
-            contentUri = metadata.artworkUri.takeIf { source == "YOUTUBE" } ?: uri,
-            source = source,
-            youtubeVideoId = youtubeVideoId,
-            mimeType = extras?.getString(MediaItemExtras.MIME_TYPE)
-        )
+        mediaItem.mediaId.toLongOrNull()
+            ?.takeIf { it > 0L }
+            ?.let { id -> trackRepository.getTrackById(id)?.let { return it } }
+        return mediaItem.toTrackOrNull()
     }
 
 }

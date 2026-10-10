@@ -10,8 +10,9 @@ import com.kaon.music.core.data.model.Playlist
 import com.kaon.music.core.data.model.TopResultItem
 import com.kaon.music.core.data.model.Track
 import com.kaon.music.core.data.online.YtItemMapper
-import com.kaon.music.core.data.repository.PlaylistRepository
-import com.kaon.music.core.data.repository.TrackRepository
+import com.kaon.music.core.model.ErrorMapper
+import com.kaon.music.core.model.LibraryController
+import com.kaon.music.core.model.PlayerController
 import com.kaon.music.core.designsystem.theme.GenreClassicalBrush
 import com.kaon.music.core.designsystem.theme.GenreElectronicBrush
 import com.kaon.music.core.designsystem.theme.GenreHipHopBrush
@@ -21,7 +22,7 @@ import com.kaon.music.core.designsystem.theme.GenrePopBrush
 import com.kaon.music.core.designsystem.theme.GenreRnBBrush
 import com.kaon.music.core.designsystem.theme.GenreRockBrush
 import com.kaon.music.core.network.NetworkMonitor
-import com.kaon.music.core.playback.PlaybackFacade
+
 import com.kaon.music.feature.search.component.GenreItem
 import com.metrolist.innertube.YouTube
 import com.metrolist.innertube.models.AlbumItem
@@ -30,8 +31,10 @@ import com.metrolist.innertube.models.PlaylistItem
 import com.metrolist.innertube.models.SongItem
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -39,6 +42,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
@@ -68,24 +72,29 @@ data class SearchUiState(
     val onlineArtists: List<Artist> = emptyList(),
     val onlinePlaylists: List<OnlinePlaylist> = emptyList(),
     val isSearchingOnline: Boolean = false,
+    /**
+     * The online search *failed*. Deliberately separate from the empty lists: a network failure must
+     * never render as "no results" (Phase 6A §12).
+     */
+    val onlineSearchFailed: Boolean = false,
     val isOnline: Boolean = true,
     val genres: List<GenreItem> = emptyList(),
     val activeTrackId: Long? = null,
     val isPlaying: Boolean = false
 )
 
-@OptIn(FlowPreview::class)
+@OptIn(FlowPreview::class, ExperimentalCoroutinesApi::class)
 class SearchViewModel(
-    private val trackRepository: TrackRepository,
-    private val playbackFacade: PlaybackFacade,
+    private val libraryController: LibraryController,
+    private val playerController: PlayerController,
     private val networkConnectivityMonitor: NetworkMonitor? = null,
-    private val playlistRepository: PlaylistRepository? = null,
     private val savedStateHandle: SavedStateHandle = SavedStateHandle(),
     private val computeDispatcher: CoroutineDispatcher = Dispatchers.Default
 ) : ViewModel() {
 
-    val playlists: StateFlow<List<Playlist>> = (playlistRepository?.observeAllPlaylists() ?: flowOf(emptyList()))
+    val playlists: StateFlow<List<Playlist>> = libraryController.observePlaylists()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
 
     // Restored so rotating mid-search does not discard the query and re-issue the network search.
     private val _searchQuery = MutableStateFlow(savedStateHandle.get<String>(KEY_QUERY) ?: "")
@@ -103,6 +112,7 @@ class SearchViewModel(
     private val _onlineArtists = MutableStateFlow<List<Artist>>(emptyList())
     private val _onlinePlaylists = MutableStateFlow<List<OnlinePlaylist>>(emptyList())
     private val _isSearchingOnline = MutableStateFlow(false)
+    private val _onlineSearchFailed = MutableStateFlow(false)
 
     private var onlineSearchJob: Job? = null
     private var suggestionsJob: Job? = null
@@ -174,84 +184,127 @@ class SearchViewModel(
         }
     }
 
-    private val searchContent = combine(
+    /**
+     * Debounced, normalized query driving the local (database) searches.
+     *
+     * The online collectors below debounce separately because their tolerance differs: a network
+     * search is worth waiting longer for than an indexed local query.
+     */
+    private val localQuery: Flow<String> = _searchQuery
+        .debounce { if (it.isBlank()) 0L else LOCAL_SEARCH_DEBOUNCE_MS }
+        .map { it.trim() }
+        .distinctUntilChanged()
+
+    /**
+     * Local matches, resolved by SQL.
+     *
+     * Previously this ViewModel observed the entire track, album, and artist tables and filtered them
+     * in Kotlin on every query change — the single largest full-library materialisation in the app.
+     * Each of these is now a bounded database query that returns only what the section renders.
+     * `flatMapLatest` cancels the in-flight query when the term changes.
+     */
+    private val localTracks: Flow<List<Track>> = combine(localQuery, _selectedFilter) { q, f -> q to f }
+        .flatMapLatest { (query, filter) ->
+            if (query.isBlank() || filter !in LOCAL_TRACK_FILTERS) {
+                flowOf(emptyList())
+            } else {
+                libraryController.searchTracks(query, limit = LOCAL_SECTION_LIMIT)
+            }
+        }
+
+    private val localAlbums: Flow<List<Album>> = combine(localQuery, _selectedFilter) { q, f -> q to f }
+        .flatMapLatest { (query, filter) ->
+            if (query.isBlank() || filter !in LOCAL_ALBUM_FILTERS) {
+                flowOf(emptyList())
+            } else {
+                libraryController.searchAlbums(query, limit = LOCAL_SECTION_LIMIT)
+            }
+        }
+
+    private val localArtists: Flow<List<Artist>> = combine(localQuery, _selectedFilter) { q, f -> q to f }
+        .flatMapLatest { (query, filter) ->
+            if (query.isBlank() || filter !in LOCAL_ARTIST_FILTERS) {
+                flowOf(emptyList())
+            } else {
+                libraryController.searchArtists(query, limit = LOCAL_SECTION_LIMIT)
+            }
+        }
+
+
+    private data class LocalResults(
+        val tracks: List<Track>,
+        val albums: List<Album>,
+        val artists: List<Artist>
+    )
+
+    private val localResults: Flow<LocalResults> =
+        combine(localTracks, localAlbums, localArtists) { tracks, albums, artists ->
+            LocalResults(tracks, albums, artists)
+        }
+
+    private data class OnlineResults(
+        val topResult: TopResultItem?,
+        val tracks: List<Track>,
+        val albums: List<Album>,
+        val artists: List<Artist>,
+        val playlists: List<OnlinePlaylist>,
+        val isSearching: Boolean,
+        val failed: Boolean
+    )
+
+    private val onlineResults: Flow<OnlineResults> = combine(
+        _topResult,
+        _onlineTracks,
+        _onlineAlbums,
+        combine(_onlineArtists, _onlinePlaylists, _isSearchingOnline) { artists, playlists, searching ->
+            Triple(artists, playlists, searching)
+        }
+    ) { top, tracks, albums, (artists, playlists, searching) ->
+        OnlineResults(top, tracks, albums, artists, playlists, searching, _onlineSearchFailed.value)
+    }
+
+    private data class QueryMeta(
+        val query: String,
+        val filter: SearchFilterType,
+        val suggestions: List<String>,
+        val isOnline: Boolean
+    )
+
+    private val queryMeta: Flow<QueryMeta> = combine(
         _searchQuery,
         _selectedFilter,
         _suggestions,
-        _topResult,
-        trackRepository.observeAllTracks(),
-        trackRepository.observeAllAlbums(),
-        trackRepository.observeAllArtists(),
-        _onlineTracks,
-        _onlineAlbums,
-        _onlineArtists,
-        _onlinePlaylists,
-        _isSearchingOnline,
         isOnlineFlow
-    ) { args ->
-        val query = args[0] as String
-        val filter = args[1] as SearchFilterType
-        @Suppress("UNCHECKED_CAST")
-        val suggestions = args[2] as List<String>
-        val topResult = args[3] as? TopResultItem
-        @Suppress("UNCHECKED_CAST")
-        val allTracks = args[4] as List<Track>
-        @Suppress("UNCHECKED_CAST")
-        val allAlbums = args[5] as List<Album>
-        @Suppress("UNCHECKED_CAST")
-        val allArtists = args[6] as List<Artist>
-        @Suppress("UNCHECKED_CAST")
-        val onlineTracks = args[7] as List<Track>
-        @Suppress("UNCHECKED_CAST")
-        val onlineAlbums = args[8] as List<Album>
-        @Suppress("UNCHECKED_CAST")
-        val onlineArtists = args[9] as List<Artist>
-        @Suppress("UNCHECKED_CAST")
-        val onlinePlaylists = args[10] as List<OnlinePlaylist>
-        val isSearchingOnline = args[11] as Boolean
-        val isOnline = args[12] as Boolean
+    ) { query, filter, suggestions, isOnline ->
+        QueryMeta(query, filter, suggestions, isOnline)
+    }
 
-        val q = query.trim().lowercase()
-        val (tracks, albums, artists) = if (q.isBlank()) {
-            Triple(emptyList(), emptyList(), emptyList())
-        } else {
-            val matchedTracks = when (filter) {
-                SearchFilterType.ALL, SearchFilterType.SONGS, SearchFilterType.VIDEOS -> allTracks.filter {
-                    it.title.lowercase().contains(q) ||
-                        it.artist.lowercase().contains(q) ||
-                        it.album.lowercase().contains(q)
-                }
-                else -> emptyList()
-            }
-            val matchedAlbums = when (filter) {
-                SearchFilterType.ALL, SearchFilterType.ALBUMS -> allAlbums.filter {
-                    it.title.lowercase().contains(q) || it.artist.lowercase().contains(q)
-                }
-                else -> emptyList()
-            }
-            val matchedArtists = when (filter) {
-                SearchFilterType.ALL, SearchFilterType.ARTISTS -> allArtists.filter {
-                    it.name.lowercase().contains(q)
-                }
-                else -> emptyList()
-            }
-            Triple(matchedTracks, matchedAlbums, matchedArtists)
-        }
-
+    private val searchContent = combine(
+        queryMeta,
+        localResults,
+        onlineResults
+    ) { meta, local, online ->
         SearchUiState(
-            searchQuery = query,
-            selectedFilter = filter,
-            suggestions = suggestions,
-            topResult = if (isOnline && (filter == SearchFilterType.ALL || filter == SearchFilterType.SONGS)) topResult else null,
-            matchingTracks = tracks,
-            matchingAlbums = albums,
-            matchingArtists = artists,
-            onlineTracks = if (isOnline) onlineTracks else emptyList(),
-            onlineAlbums = if (isOnline) onlineAlbums else emptyList(),
-            onlineArtists = if (isOnline) onlineArtists else emptyList(),
-            onlinePlaylists = if (isOnline) onlinePlaylists else emptyList(),
-            isSearchingOnline = isSearchingOnline && isOnline,
-            isOnline = isOnline,
+            searchQuery = meta.query,
+            selectedFilter = meta.filter,
+            suggestions = meta.suggestions,
+            topResult = if (meta.isOnline &&
+                (meta.filter == SearchFilterType.ALL || meta.filter == SearchFilterType.SONGS)
+            ) {
+                online.topResult
+            } else {
+                null
+            },
+            matchingTracks = local.tracks,
+            matchingAlbums = local.albums,
+            matchingArtists = local.artists,
+            onlineTracks = if (meta.isOnline) online.tracks else emptyList(),
+            onlineAlbums = if (meta.isOnline) online.albums else emptyList(),
+            onlineArtists = if (meta.isOnline) online.artists else emptyList(),
+            onlinePlaylists = if (meta.isOnline) online.playlists else emptyList(),
+            isSearchingOnline = online.isSearching && meta.isOnline,
+            onlineSearchFailed = online.failed && meta.isOnline,
+            isOnline = meta.isOnline,
             genres = defaultGenres
         )
     }.flowOn(computeDispatcher)
@@ -263,10 +316,11 @@ class SearchViewModel(
      */
     val uiState: StateFlow<SearchUiState> = combine(
         searchContent,
-        playbackFacade.nowPlaying
-            .map { it.currentTrack?.id to it.isPlaying }
+        playerController.nowPlaying
+            .map { it.currentTrack?.id?.value to it.isPlaying }
             .distinctUntilChanged()
     ) { content, (activeTrackId, isPlaying) ->
+
         content.copy(activeTrackId = activeTrackId, isPlaying = isPlaying)
     }.stateIn(
         scope = viewModelScope,
@@ -278,6 +332,7 @@ class SearchViewModel(
         _searchQuery.value = query
         savedStateHandle[KEY_QUERY] = query
         if (query.isBlank()) {
+            _onlineSearchFailed.value = false
             _suggestions.value = emptyList()
             _topResult.value = null
             _onlineTracks.value = emptyList()
@@ -318,6 +373,7 @@ class SearchViewModel(
     private fun performOnlineSearch(query: String, filter: SearchFilterType) {
         val q = query.trim()
         if (q.isBlank()) {
+            _onlineSearchFailed.value = false
             _topResult.value = null
             _onlineTracks.value = emptyList()
             _onlineAlbums.value = emptyList()
@@ -328,6 +384,7 @@ class SearchViewModel(
         }
 
         onlineSearchJob?.cancel()
+        _onlineSearchFailed.value = false
         onlineSearchJob = viewModelScope.launch {
             _isSearchingOnline.value = true
             try {
@@ -360,7 +417,7 @@ class SearchViewModel(
                             }
 
                             _topResult.value = topResultItem
-                            _onlineTracks.value = songs.distinctBy { it.youtubeVideoId }
+                            _onlineTracks.value = songs.distinctBy { it.stableKey }
                             _onlineAlbums.value = albums.distinctBy { it.albumId }
                             _onlineArtists.value = artists.distinctBy { it.name }
                             _onlinePlaylists.value = playlists.distinctBy { it.playlistId }
@@ -377,15 +434,15 @@ class SearchViewModel(
                         val songs = res?.items?.filterIsInstance<SongItem>()?.map { YtItemMapper.songItemToTrack(it) }.orEmpty()
                         _topResult.value = songs.firstOrNull()?.let {
                             TopResultItem(
-                                id = it.youtubeVideoId.orEmpty(),
+                                id = it.externalId.orEmpty(),
                                 title = it.title,
                                 subtitle = "Song • ${it.artist}",
                                 type = com.kaon.music.core.data.model.TopResultType.SONG,
-                                thumbnailUri = it.contentUri,
+                                thumbnailUrl = (it.artwork as? com.kaon.music.core.data.model.ArtworkRef.RemoteUrl)?.url,
                                 track = it
                             )
                         }
-                        _onlineTracks.value = songs.distinctBy { it.youtubeVideoId }
+                        _onlineTracks.value = songs.distinctBy { it.stableKey }
                         _onlineAlbums.value = emptyList()
                         _onlineArtists.value = emptyList()
                         _onlinePlaylists.value = emptyList()
@@ -394,7 +451,7 @@ class SearchViewModel(
                         val res = YouTube.search(q, YouTube.SearchFilter.FILTER_VIDEO).getOrNull()
                         val videos = res?.items?.filterIsInstance<SongItem>()?.map { YtItemMapper.songItemToTrack(it) }.orEmpty()
                         _topResult.value = null
-                        _onlineTracks.value = videos.distinctBy { it.youtubeVideoId }
+                        _onlineTracks.value = videos.distinctBy { it.stableKey }
                         _onlineAlbums.value = emptyList()
                         _onlineArtists.value = emptyList()
                         _onlinePlaylists.value = emptyList()
@@ -427,8 +484,13 @@ class SearchViewModel(
                         _onlinePlaylists.value = playlists.distinctBy { it.playlistId }
                     }
                 }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                // The query changed or the screen went away: cancellation is not a failure (§11).
+                throw e
             } catch (e: Exception) {
-                Timber.w(e, "Online search failed for query: $q (filter=$filter)")
+                val error = ErrorMapper.fromThrowable(e)
+                Timber.w(e, "Online search failed for query: $q (filter=$filter) as ${error.kind}")
+                _onlineSearchFailed.value = true
                 _topResult.value = null
                 _onlineTracks.value = emptyList()
                 _onlineAlbums.value = emptyList()
@@ -446,39 +508,58 @@ class SearchViewModel(
 
     fun playTrack(track: Track, queue: List<Track>? = null) {
         val activeQueue = queue ?: (uiState.value.matchingTracks + uiState.value.onlineTracks)
-        playbackFacade.playTrack(track, activeQueue)
+        playerController.playTrack(track, activeQueue)
     }
 
     fun playNext(track: Track) {
-        playbackFacade.playNext(track)
+        playerController.playNext(track)
     }
 
     fun addToQueue(track: Track) {
-        playbackFacade.enqueue(track)
+        playerController.enqueue(track)
     }
 
-    fun toggleFavorite(trackId: Long) {
+    /**
+     * Favorites a track, persisting provider media first.
+     *
+     * Takes the whole [Track] rather than an id because a YouTube search result has no id yet; the
+     * repository upserts it and favorites the resulting row (spec §23).
+     */
+    fun toggleFavorite(track: Track) {
         viewModelScope.launch {
-            trackRepository.toggleFavorite(trackId)
+            libraryController.toggleFavorite(track)
         }
     }
 
     fun addTrackToPlaylist(playlistId: Long, track: Track) {
-        val repo = playlistRepository ?: return
         viewModelScope.launch {
-            repo.addTrackToPlaylist(playlistId, track.id)
+            libraryController.addTrack(playlistId, track)
         }
     }
 
     fun createPlaylistAndAddTrack(name: String, track: Track) {
-        val repo = playlistRepository ?: return
         viewModelScope.launch {
-            val plId = repo.createPlaylist(name)
-            repo.addTrackToPlaylist(plId, track.id)
+            val plId = libraryController.createPlaylist(name)
+            libraryController.addTrack(plId, track)
         }
     }
 
+
     private companion object {
         const val KEY_QUERY = "search.query"
+
+        /** Local (indexed SQL) search settles faster than the network search, so it debounces less. */
+        const val LOCAL_SEARCH_DEBOUNCE_MS = 200L
+
+        /** Each local section is a capped list inside a scrolling page, not a full result set. */
+        const val LOCAL_SECTION_LIMIT = 50
+
+        val LOCAL_TRACK_FILTERS = setOf(
+            SearchFilterType.ALL,
+            SearchFilterType.SONGS,
+            SearchFilterType.VIDEOS
+        )
+        val LOCAL_ALBUM_FILTERS = setOf(SearchFilterType.ALL, SearchFilterType.ALBUMS)
+        val LOCAL_ARTIST_FILTERS = setOf(SearchFilterType.ALL, SearchFilterType.ARTISTS)
     }
 }

@@ -53,7 +53,7 @@ fun ArtistDetailScreen(
     onAlbumClick: (Album) -> Unit,
     onTrackClick: (Track) -> Unit,
     onPlayAll: () -> Unit,
-    onFavoriteToggle: (Long) -> Unit,
+    onFavoriteToggle: (Track) -> Unit,
     onPlayNext: (Track) -> Unit,
     onAddToQueue: (Track) -> Unit,
     bottomPadding: PaddingValues,
@@ -191,9 +191,9 @@ fun ArtistDetailScreen(
                 TrackItem(
                     track = track,
                     isPlaying = isPlaying,
-                    isCurrent = track.id == activeTrackId,
+                    isCurrent = track.id.value == activeTrackId,
                     onClick = { onTrackClick(track) },
-                    onFavoriteToggle = { onFavoriteToggle(track.id) },
+                    onFavoriteToggle = { onFavoriteToggle(track) },
                     onPlayNext = { onPlayNext(track) },
                     onAddToQueue = { onAddToQueue(track) },
                     onAddToPlaylist = { onAddToPlaylist(track) }

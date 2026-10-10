@@ -1,8 +1,8 @@
 package com.kaon.music.feature.settings
 
-import com.kaon.music.core.data.db.dao.FavoriteDao
-import com.kaon.music.core.data.db.dao.PlayEventDao
-import com.kaon.music.core.data.db.dao.TrackDao
+import com.kaon.music.core.data.db.dao.FakeFavoriteDaoBase
+import com.kaon.music.core.data.db.dao.FakePlayEventDaoBase
+import com.kaon.music.core.data.db.dao.FakeTrackDaoBase
 import com.kaon.music.core.data.db.entity.FavoriteTrackEntity
 import com.kaon.music.core.data.db.entity.PlayEventEntity
 import com.kaon.music.core.data.db.entity.TrackEntity
@@ -12,7 +12,8 @@ import com.kaon.music.core.data.repository.TrackRepository
 import com.kaon.music.core.data.repository.UserSettings
 import com.kaon.music.core.data.sync.MediaStoreScanner
 import com.kaon.music.core.data.sync.SyncEngine
-import com.kaon.music.core.online.AudioQuality
+import com.kaon.music.core.extraction.model.AudioQuality
+import com.kaon.music.core.extraction.model.AudioType
 import com.kaon.music.feature.library.MainDispatcherRule
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
@@ -39,7 +40,7 @@ class SettingsViewModelTest {
             userSettingsState.value = userSettingsState.value.copy(streamingQuality = quality)
         }
 
-        fun setPreferredAudioType(audioType: com.kaon.music.core.online.AudioType) {
+        fun setPreferredAudioType(audioType: com.kaon.music.core.extraction.model.AudioType) {
             userSettingsState.value = userSettingsState.value.copy(preferredAudioType = audioType)
         }
 
@@ -92,53 +93,16 @@ class SettingsViewModelTest {
         }
     }
 
-    private class FakeTestTrackDao : TrackDao {
-        override fun observeAllActiveTracks(): Flow<List<TrackEntity>> = flowOf(emptyList())
-        override suspend fun getAllActiveTracks(): List<TrackEntity> = emptyList()
-        override suspend fun getAllStoredTracks(): List<TrackEntity> = emptyList()
-        override suspend fun getTrackById(trackId: Long): TrackEntity? = null
-        override suspend fun getTracksByIds(trackIds: List<Long>): List<TrackEntity> = emptyList()
-        override suspend fun getTrackByMediaStoreId(mediaStoreId: Long): TrackEntity? = null
-        override fun searchTracks(query: String): Flow<List<TrackEntity>> = flowOf(emptyList())
-        override fun observeRecentlyAddedTracks(limit: Int): Flow<List<TrackEntity>> = flowOf(emptyList())
-        override suspend fun getRecentlyAddedTracks(limit: Int): List<TrackEntity> = emptyList()
-        override fun observeAllAlbums(): Flow<List<TrackDao.AlbumSummary>> = flowOf(emptyList())
-        override suspend fun getAlbumById(albumId: Long): TrackDao.AlbumSummary? = null
-        override fun observeTracksForAlbum(albumId: Long): Flow<List<TrackEntity>> = flowOf(emptyList())
-        override suspend fun getTracksForAlbum(albumId: Long): List<TrackEntity> = emptyList()
-        override fun observeAllArtists(): Flow<List<TrackDao.ArtistSummary>> = flowOf(emptyList())
-        override fun observeAlbumsForArtist(artistNormalized: String): Flow<List<TrackDao.AlbumSummary>> = flowOf(emptyList())
-        override fun observeTracksForArtist(artistNormalized: String): Flow<List<TrackEntity>> = flowOf(emptyList())
-        override suspend fun getTracksForArtist(artistNormalized: String): List<TrackEntity> = emptyList()
-        override suspend fun findReLinkCandidates(minDurationMs: Long, maxDurationMs: Long, sizeBytes: Long): List<TrackEntity> = emptyList()
+    private class FakeTestTrackDao : FakeTrackDaoBase() {
         override suspend fun insertTrack(track: TrackEntity): Long = track.trackId
         override suspend fun insertTracks(tracks: List<TrackEntity>): List<Long> = tracks.map { it.trackId }
-        override suspend fun updateTrack(track: TrackEntity) {}
-        override suspend fun updateTracks(tracks: List<TrackEntity>) {}
-        override suspend fun reLinkTrack(trackId: Long, newMediaStoreId: Long, timestamp: Long) {}
-        override suspend fun markTracksMissing(trackIds: List<Long>) {}
-        override suspend fun markTracksPresent(trackIds: List<Long>, timestamp: Long) {}
-        override suspend fun purgeOrphanedTracks(purgeCutoffTimestamp: Long): Int = 0
     }
 
-    private class FakeTestFavoriteDao : FavoriteDao {
-        override fun observeFavoriteTrackIds(): Flow<List<Long>> = flowOf(emptyList())
-        override suspend fun getFavoriteTrackIds(): List<Long> = emptyList()
-        override fun observeFavoriteTrackEntities(): Flow<List<TrackEntity>> = flowOf(emptyList())
-        override suspend fun getFavoriteTrackEntities(): List<TrackEntity> = emptyList()
-        override fun observeIsFavorite(trackId: Long): Flow<Boolean> = flowOf(false)
-        override suspend fun isFavorite(trackId: Long): Boolean = false
-        override suspend fun addFavorite(favorite: FavoriteTrackEntity) {}
-        override suspend fun removeFavorite(trackId: Long) {}
-    }
+    private class FakeTestFavoriteDao : FakeFavoriteDaoBase()
 
-    private class FakeTestPlayEventDao : PlayEventDao {
+    private class FakeTestPlayEventDao : FakePlayEventDaoBase() {
         var clearCount = 0
         override suspend fun insertEvent(event: PlayEventEntity): Long = 1L
-        override fun observeRecentlyPlayedTrackEntities(limit: Int): Flow<List<TrackEntity>> = flowOf(emptyList())
-        override suspend fun getRecentlyPlayedTrackEntities(limit: Int): List<TrackEntity> = emptyList()
-        override fun observeMostPlayedTrackEntities(limit: Int): Flow<List<TrackEntity>> = flowOf(emptyList())
-        override suspend fun getMostPlayedTrackEntities(limit: Int): List<TrackEntity> = emptyList()
         override suspend fun clearAllEvents(): Int {
             clearCount++
             return 10
@@ -201,9 +165,9 @@ class SettingsViewModelTest {
         fakeRepo.setStreamingQuality(AudioQuality.HIGH)
         assertEquals(AudioQuality.HIGH, fakeRepo.userSettingsState.value.streamingQuality)
 
-        assertEquals(com.kaon.music.core.online.AudioType.AUTO, fakeRepo.userSettingsState.value.preferredAudioType)
-        fakeRepo.setPreferredAudioType(com.kaon.music.core.online.AudioType.OPUS)
-        assertEquals(com.kaon.music.core.online.AudioType.OPUS, fakeRepo.userSettingsState.value.preferredAudioType)
+        assertEquals(com.kaon.music.core.extraction.model.AudioType.AUTO, fakeRepo.userSettingsState.value.preferredAudioType)
+        fakeRepo.setPreferredAudioType(com.kaon.music.core.extraction.model.AudioType.OPUS)
+        assertEquals(com.kaon.music.core.extraction.model.AudioType.OPUS, fakeRepo.userSettingsState.value.preferredAudioType)
 
         assertEquals("DARK", fakeRepo.userSettingsState.value.themeMode)
         fakeRepo.setThemeMode("AMOLED")
@@ -257,18 +221,18 @@ class SettingsViewModelTest {
     @Test
     fun getKaonColors_returnsCorrectColorsForThemesAndAccents() {
         val darkCoral = com.kaon.music.core.designsystem.theme.getKaonColors("DARK", "CORAL")
-        assertEquals(com.kaon.music.core.designsystem.theme.KaonCoralPrimary, darkCoral.primary)
-        assertEquals(androidx.compose.ui.graphics.Color(0xFF0F0F11), darkCoral.background)
+        assertEquals(com.kaon.music.core.designsystem.theme.accentSwatchFor("CORAL").accent, darkCoral.primary)
+        assertEquals(androidx.compose.ui.graphics.Color(0xFF0B0C0F), darkCoral.background)
 
         val amoledViolet = com.kaon.music.core.designsystem.theme.getKaonColors("AMOLED", "VIOLET")
-        assertEquals(com.kaon.music.core.designsystem.theme.KaonVioletPrimary, amoledViolet.primary)
+        assertEquals(com.kaon.music.core.designsystem.theme.accentSwatchFor("VIOLET").accent, amoledViolet.primary)
         assertEquals(androidx.compose.ui.graphics.Color(0xFF000000), amoledViolet.background)
 
         val darkBlue = com.kaon.music.core.designsystem.theme.getKaonColors("DARK", "BLUE")
-        assertEquals(com.kaon.music.core.designsystem.theme.KaonBluePrimary, darkBlue.primary)
+        assertEquals(com.kaon.music.core.designsystem.theme.accentSwatchFor("BLUE").accent, darkBlue.primary)
 
         val amoledEmerald = com.kaon.music.core.designsystem.theme.getKaonColors("AMOLED", "EMERALD")
-        assertEquals(com.kaon.music.core.designsystem.theme.KaonEmeraldPrimary, amoledEmerald.primary)
+        assertEquals(com.kaon.music.core.designsystem.theme.accentSwatchFor("EMERALD").accent, amoledEmerald.primary)
         assertEquals(androidx.compose.ui.graphics.Color(0xFF000000), amoledEmerald.background)
     }
 }

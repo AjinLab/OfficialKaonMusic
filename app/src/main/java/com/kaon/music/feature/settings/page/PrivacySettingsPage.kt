@@ -1,6 +1,5 @@
 package com.kaon.music.feature.settings.page
 
-import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
@@ -39,7 +38,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import com.kaon.music.core.data.repository.UserSettings
+import com.kaon.music.core.model.UserSettings
 import com.kaon.music.core.designsystem.theme.KaonBackground
 import com.kaon.music.core.designsystem.theme.KaonHeartRed
 import com.kaon.music.core.designsystem.theme.KaonPrimary
@@ -56,7 +55,6 @@ fun PrivacySettingsPage(
     bottomPadding: PaddingValues,
     modifier: Modifier = Modifier
 ) {
-    BackHandler(onBack = onBack)
 
     var showClearHistoryDialog by remember { mutableStateOf(false) }
 

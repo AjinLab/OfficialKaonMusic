@@ -20,7 +20,9 @@ import com.kaon.music.app.MainActivity
 import com.kaon.music.core.data.db.KaonDatabase
 import com.kaon.music.core.data.model.PlayEvent
 import com.kaon.music.core.data.model.QueueEntry
+import com.kaon.music.core.data.MediaLocatorUri
 import com.kaon.music.core.data.model.QueueSnapshot
+import com.kaon.music.core.data.model.TrackId
 import com.kaon.music.core.data.repository.HistoryRepository
 import com.kaon.music.core.data.repository.TrackRepository
 import com.kaon.music.core.data.sync.MediaStoreScanner
@@ -39,7 +41,7 @@ import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.datasource.ResolvingDataSource
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import com.kaon.music.core.data.online.YouTubeSessionManager
-import com.kaon.music.core.online.YouTubeStreamExtractor
+import com.kaon.music.core.extraction.YouTubeStreamExtractor
 import com.kaon.music.app.KaonApplication
 import kotlinx.coroutines.runBlocking
 
@@ -75,6 +77,20 @@ class KaonPlaybackService : MediaSessionService() {
     private var currentTrackId: Long? = null
     private var trackStartPlayTimestampMs: Long = 0L
     private var hasRecordedCurrentTrackPlayEvent = false
+
+    /** Set once the loader thread has resolved the current item; reset on every item transition. */
+    @Volatile
+    private var resolvedCurrentItem = false
+
+    /**
+     * Pending queue-transition measurement: the wall-clock instant [Player.Listener.onMediaItemTransition]
+     * fired for the item now starting, and whether it is a remote (resolution-needing) item.
+     * Consumed by [Player.STATE_READY], which is the moment audio can actually flow.
+     */
+    @Volatile
+    private var pendingTransitionAtElapsedMs = 0L
+    @Volatile
+    private var pendingTransitionIsRemote = false
 
     @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
     override fun onCreate() {
@@ -115,15 +131,20 @@ class KaonPlaybackService : MediaSessionService() {
             object : ResolvingDataSource.Resolver {
                 override fun resolveDataSpec(dataSpec: DataSpec): DataSpec {
                     val uri = dataSpec.uri
-                    if (uri.scheme == "youtube" || uri.host == "youtube.com" || uri.host == "music.youtube.com" || uri.host == "youtu.be") {
-                        val videoId = when {
-                            uri.scheme == "youtube" -> uri.authority ?: uri.host ?: uri.schemeSpecificPart?.removePrefix("//") ?: ""
-                            uri.host == "youtube.com" || uri.host == "music.youtube.com" -> uri.getQueryParameter("v") ?: ""
-                            uri.host == "youtu.be" -> uri.lastPathSegment ?: ""
-                            else -> ""
-                        }.trim()
+                    val identity = providerIdentityOf(uri)
+                    if (identity != null) {
+                        // Only YouTube resolves today; a second provider adds a branch here, not a new
+                        // resolver contract. The extraction strategy itself is untouched.
+                        val videoId = identity.second
 
                         if (videoId.isNotBlank()) {
+                            // First open of an item is the track start — the open whose latency the
+                            // user feels. Subsequent opens are bounded-range chunk re-opens a warm
+                            // cache entry serves in microseconds; keeping them out of the track-start
+                            // average is why the two are counted separately.
+                            val isTrackStart = !resolvedCurrentItem
+                            val openStartedMs = android.os.SystemClock.elapsedRealtime()
+
                             // Resolution failure must surface as a classified IO error, never as the
                             // raw `youtube://` placeholder reaching the HTTP stack. ExoPlayer's bounded
                             // load-error policy and the service error listener take it from there.
@@ -140,16 +161,28 @@ class KaonPlaybackService : MediaSessionService() {
                                     )
                                 }.getOrThrow()
                             } catch (ce: kotlinx.coroutines.CancellationException) {
-                                // Loader thread interrupted (load cancelled by a skip/release);
-                                // abandon this open without an error cycle.
-                                null
+                                // Resolver torn down or the loader thread interrupted (skip/release).
+                                // InterruptedIOException distinguishes "abandoned" from "no playable
+                                // URL": Media3 drops it entirely when the load was cancelled, and a
+                                // spurious error never reaches the unplayable-track policy.
+                                ResolutionMetrics.record(ResolutionMetrics.BRIDGE_CANCELLED, 0L)
+                                Timber.tag("playback").d("Stream resolution cancelled for video $videoId")
+                                throw java.io.InterruptedIOException("Stream resolution cancelled for video $videoId")
                             } catch (t: Throwable) {
+                                ResolutionMetrics.record(ResolutionMetrics.BRIDGE_FAILED, 0L)
                                 throw java.io.IOException("Stream resolution failed for video $videoId", t)
                             }
-                            if (resolved != null && resolved.url.isNotBlank()) {
-                                return dataSpec.withResolvedStream(resolved)
+                            if (resolved.url.isBlank()) {
+                                ResolutionMetrics.record(ResolutionMetrics.BRIDGE_FAILED, 0L)
+                                throw java.io.IOException("Stream resolution returned no playable URL for video $videoId")
                             }
-                            throw java.io.IOException("Stream resolution returned no playable URL for video $videoId")
+
+                            resolvedCurrentItem = true
+                            ResolutionMetrics.record(
+                                if (isTrackStart) ResolutionMetrics.BRIDGE_INITIAL else ResolutionMetrics.BRIDGE_CHUNK,
+                                android.os.SystemClock.elapsedRealtime() - openStartedMs
+                            )
+                            return dataSpec.withResolvedStream(resolved)
                         }
                         throw java.io.IOException("Malformed stream placeholder URI: $uri")
                     }
@@ -222,21 +255,21 @@ class KaonPlaybackService : MediaSessionService() {
                 trackStartPlayTimestampMs = System.currentTimeMillis()
                 hasRecordedCurrentTrackPlayEvent = false
 
+                // Track-start latency: the bridge's first resolve of this item runs after this
+                // callback, and STATE_READY closes the measurement (audio can actually flow).
+                pendingTransitionAtElapsedMs = android.os.SystemClock.elapsedRealtime()
+                pendingTransitionIsRemote = mediaItem?.localConfiguration?.uri?.let { providerIdentityOf(it) } != null
+                resolvedCurrentItem = false
+
                 scheduleQueueSnapshot()
             }
 
             override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
                 val currentItem = player.currentMediaItem
                 val uri = currentItem?.localConfiguration?.uri
-                val isYouTube = uri != null && (uri.scheme == "youtube" || uri.host == "youtube.com" || uri.host == "music.youtube.com" || uri.host == "youtu.be")
-                val videoId = if (isYouTube) {
-                    when {
-                        uri!!.scheme == "youtube" -> uri.authority ?: uri.host ?: uri.schemeSpecificPart?.removePrefix("//") ?: ""
-                        uri.host == "youtube.com" || uri.host == "music.youtube.com" -> uri.getQueryParameter("v") ?: ""
-                        uri.host == "youtu.be" -> uri.lastPathSegment ?: ""
-                        else -> ""
-                    }.trim()
-                } else ""
+                val identity = uri?.let { providerIdentityOf(it) }
+                val isYouTube = identity?.first == "YOUTUBE"
+                val videoId = if (isYouTube) identity!!.second else ""
 
                 val is403or410 = error.errorCode == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS ||
                     error.cause?.message?.contains("403") == true ||
@@ -304,6 +337,20 @@ class KaonPlaybackService : MediaSessionService() {
             }
 
             override fun onPlaybackStateChanged(playbackState: Int) {
+                if (playbackState == Player.STATE_READY && pendingTransitionAtElapsedMs != 0L) {
+                    // The user-visible track-start latency: transition → audio able to flow. Includes
+                    // the bridge resolve (bridge-initial covers that slice) plus buffering/decoder init.
+                    val transitionMs = android.os.SystemClock.elapsedRealtime() - pendingTransitionAtElapsedMs
+                    ResolutionMetrics.record(
+                        if (pendingTransitionIsRemote) {
+                            ResolutionMetrics.TRANSITION_READY_REMOTE
+                        } else {
+                            ResolutionMetrics.TRANSITION_READY_LOCAL
+                        },
+                        transitionMs
+                    )
+                    pendingTransitionAtElapsedMs = 0L
+                }
                 if (playbackState == Player.STATE_ENDED) {
                     checkAndRecordPlayEvent(isTransition = true)
                     snapshotManager.flush()
@@ -327,10 +374,11 @@ class KaonPlaybackService : MediaSessionService() {
         val entries = mutableListOf<QueueEntry>()
         for (i in 0 until count) {
             val item = player.getMediaItemAt(i)
-            val trackId = item.mediaId.toLongOrNull() ?: continue
-            // Persist the provider identity alongside the id. Without it, a restore can only look the
-            // track up in Room, and streamed tracks have no row there.
-            entries += QueueEntry(trackId = trackId, youtubeVideoId = item.youtubeVideoId())
+            // Identity only. A streamed track is a real `tracks` row before it can be queued, so the
+            // row owns its provider and locator and the snapshot needs no per-provider encoding
+            // (ARCHITECTURE.md §3.1).
+            val trackId = item.mediaId.toLongOrNull()?.takeIf { it > 0L } ?: continue
+            entries += QueueEntry(trackId = TrackId(trackId))
         }
 
         val snapshot = QueueSnapshot(
@@ -345,12 +393,14 @@ class KaonPlaybackService : MediaSessionService() {
         snapshotManager.scheduleSnapshotSave(snapshot, immediate = immediate)
     }
 
-    /** Reads the persisted provider id from the item extras, falling back to its `youtube://` URI. */
-    private fun MediaItem.youtubeVideoId(): String? {
-        mediaMetadata.extras?.getString(MediaItemExtras.YOUTUBE_VIDEO_ID)?.takeIf { it.isNotBlank() }?.let { return it }
-        val uri = localConfiguration?.uri ?: return null
-        return if (uri.scheme == "youtube") uri.schemeSpecificPart?.removePrefix("//")?.takeIf { it.isNotBlank() } else null
-    }
+    /**
+     * Provider identity for a playback URI, or null when the URI is a local file.
+     *
+     * One parser, in [MediaLocatorUri], which also accepts the legacy `youtube://` form so a queue
+     * written by an older build still resolves.
+     */
+    private fun providerIdentityOf(uri: Uri): Pair<String, String>? =
+        MediaLocatorUri.providerIdentityOf(uri)
 
     private fun restoreQueueSnapshotIfIdle() {
         serviceScope.launch {
@@ -360,49 +410,27 @@ class KaonPlaybackService : MediaSessionService() {
             val snapshot = snapshotManager.loadSnapshot() ?: return@launch
             if (player.mediaItemCount > 0) return@launch // Double-check race condition
 
-            // Local tracks are rehydrated from Room; remote ones are rebuilt from the persisted
-            // provider id, so a streamed queue survives process death instead of being dropped.
-            val localTracks = trackRepository
-                .getTracksByIds(snapshot.entries.filterNot { it.isRemote }.map { it.trackId })
-                .associateBy { it.id }
+            // Every entry is a canonical row now — local, streamed or (later) downloaded — so one
+            // id lookup rehydrates a mixed queue. Before Phase 4 a streamed entry had no row and had
+            // to be rebuilt by parsing provider identity out of the serialized string.
+            val tracksById = trackRepository
+                .getTracksByIds(snapshot.entries.map { it.trackId.value })
+                .associateBy { it.id.value }
 
-            val restorable = snapshot.entries.filter { it.isRemote || localTracks.containsKey(it.trackId) }
+            val restorable = snapshot.entries.filter { tracksById.containsKey(it.trackId.value) }
             if (restorable.isEmpty()) {
-                // Restore found only orphaned local tracks: clear rather than leave a snapshot that
-                // can never be restored.
+                // Nothing referenced still exists: clear rather than keep a snapshot that can never
+                // be restored.
                 Timber.tag("queue").w("Restoration snapshot contained no restorable entries. Clearing.")
                 snapshotManager.clearSnapshot()
                 return@launch
             }
             if (player.mediaItemCount > 0) return@launch
 
-            val mediaItems = restorable.map { entry ->
-                val track = localTracks[entry.trackId]
-                val uri = when {
-                    entry.isRemote -> Uri.parse("youtube://${entry.youtubeVideoId}")
-                    else -> track?.contentUri
-                }
-                MediaItem.Builder()
-                    .setMediaId(entry.trackId.toString())
-                    .setUri(uri)
-                    .setMediaMetadata(
-                        MediaMetadata.Builder()
-                            .setTitle(track?.title)
-                            .setArtist(track?.artist)
-                            .setAlbumTitle(track?.album)
-                            .setArtworkUri(track?.contentUri.takeIf { track?.source == "YOUTUBE" })
-                            .setExtras(
-                                Bundle().apply {
-                                    putString(
-                                        MediaItemExtras.SOURCE,
-                                        if (entry.isRemote) MediaItemExtras.SOURCE_YOUTUBE else MediaItemExtras.SOURCE_LOCAL
-                                    )
-                                    putString(MediaItemExtras.YOUTUBE_VIDEO_ID, entry.youtubeVideoId)
-                                }
-                            )
-                            .build()
-                    )
-                    .build()
+            // The same Track -> MediaItem conversion the facade uses. The restore path used to build
+            // items by hand without extras, so a restored streamed track lost its provider identity.
+            val mediaItems = restorable.mapNotNull { entry ->
+                tracksById[entry.trackId.value]?.toMediaItem()
             }
 
             // Index is derived from the restorable list, not the original snapshot: dropping an

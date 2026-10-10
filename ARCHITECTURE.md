@@ -23,42 +23,61 @@ It is maintained by a single developer. Architecture decisions optimise for that
 
 | Module | Type | Owns |
 | --- | --- | --- |
-| `:app` | application | Application, Activity, DI wiring, navigation, `core/*` + `feature/*` packages |
-| `:core:model` | pure Kotlin/JVM | domain types, quality policy, error model. **Zero Android imports.** (planned, phase 4) |
+| `:core:kernel` | pure Kotlin/JVM | `KaonKernel`, `ServiceRegistry`, `PluginRegistry`, `PluginLoader`, plugin contracts. **Zero Android imports.** |
+| `:app` | application | Application bootstrap, `MainActivity`, DI wiring, navigation, `core/*` + `feature/*` packages |
+| `:core:model` | pure Kotlin/JVM | domain types, capability controllers (`PlayerController`, `LibraryController`), quality policy, error model. (Zero Android imports) |
+| `:core:extraction` | android library | extraction adapter (`YouTubeStreamExtractor`), PoToken WebView, quality policy, redaction helpers |
 | `:innertube` | android library | InnerTube models and page parsing — vendored from upstream Metrolist |
 | `:baselineprofile` | test | baseline profile + startup macrobenchmark |
 
-`core/data`, `core/playback`, `core/online`, `core/ui`, and `feature/*` stay **packages inside
-`:app`**. Package discipline plus `ArchitectureBoundaryTest` gives the same enforcement as modules at
-a fraction of the build cost. Revisit at 50k LOC or a second app target.
+`core/data`, `core/playback`, `core/online`, `core/ui`, and `feature/*` stay structured packages with strict
+architectural enforcement. Package discipline plus `ArchitectureBoundaryTest` gives boundary guarantees at
+minimal build overhead.
 
-A separate `:core:extraction` module is no longer planned: extraction moved out of the repository
-entirely into the external `innertubex` artifact (§7), leaving only a thin adapter that has no reason
-to be its own module.
+Compile-time UI plugins (`DefaultUiPlugin`, `MinimalUiPlugin`) implement `UiPlugin` from `:core:kernel`,
+consume capability controllers (`PlayerController`, `LibraryController`), and are bootstrapped by `KaonKernel`.
+
+`:core:extraction` holds the extraction adapter (`YouTubeStreamExtractor`), the PoToken WebView, the quality policy,
+and the redaction helpers, and depends only on `:innertube` (+ okhttp/okio for the BotGuard challenge). It must never
+import `:app`, `core.data`, `core.playback`, or `feature/*` — enforced by `ExtractionModuleBoundaryTest`. The
+`StreamResolver` port itself lives in `core/playback` (§7), because a port belongs to its consumer; `KaonStreamResolver`
+binds it to the validated object implementation without rewriting it.
 
 ### 2.1 Dependency direction
 
 ```
-:baselineprofile ──▶ :app ──▶ :innertube ──▶ innertubex ──▶ quickjs-kt
-                       │
-                       └──▶ :core:model (phase 4)
+:baselineprofile ──▶ :app ──▶ :core:kernel
+                       │   ──▶ :innertube ──▶ innertubex ──▶ quickjs-kt
+                       │          ▲
+                       │          └──▶ :core:extraction
+                       └──▶ :core:model
 ```
 
-Inside `:app`:
+Inside `:app` and UI plugins:
 
 ```
-app/ ──▶ feature/ ──▶ core/ui ──▶ core/data
-                  └──▶ core/playback ──▶ core/data
-                                     └──▶ core/online ──▶ :innertube
+MainActivity ──▶ KaonKernel (active UiPlugin) ──▶ Capability Controllers
+                                                        │
+                      ┌─────────────────────────────────┴─────────────────────────────────┐
+                      ▼                                                                   ▼
+               PlayerController                                                   LibraryController
+                      │                                                                   │
+               PlaybackFacade                                                       TrackRepository
+                      │                                                        Playlist / History Repos
+                      ▼                                                                   │
+           KaonPlaybackService                                                            ▼
+           MediaSession / Media3                                                      Room Database
 ```
 
 Rules, enforced by `ArchitectureBoundaryTest`:
 
 1. No `core/*` package imports `com.kaon.music.app`.
-2. `feature/*` does not import Room entities/DAOs or Media3 runtime types.
-3. `core/ui` does not import `core.data.repository` or `KaonApplication`.
-4. `core/online` does not import `core.data`, `core.playback`, `core.designsystem`, or `feature`.
-5. `core/policy` is pure: no Android, no Room, no playback.
+2. UI layers (`feature/*`, UI plugins) interact with playback and library ONLY through capability controllers (`PlayerController`, `LibraryController`) and domain models.
+3. UI code does not import Room DAOs/entities, Media3 runtime types, or repositories directly.
+4. `core/ui` does not import `core.data.repository` or `KaonApplication`.
+5. `core/online` does not import `core.data`, `core.playback`, `core.designsystem`, or `feature`.
+6. `core/policy` and `core/kernel` are pure: no Android, no Room, no playback.
+
 
 ---
 
@@ -69,6 +88,16 @@ One canonical representation per concept. No competing models.
 ### 3.1 Track identity
 
 `TrackId` is always assigned by the database. **No identifier is ever derived from `hashCode()`.**
+
+Phase 4 shipped this as `core/data/model/MediaIdentity.kt` (types) + `core/data/db/TrackMapping.kt`
+(the single row↔domain mapping). Schema v8 (`MIGRATION_7_8`, hand-written): `tracks` gained
+`UNIQUE(provider, external_id)`, `media_store_id`/`relative_path` became nullable, `source`/
+`youtube_video_id` were translated away, and `favorite_tracks`/`play_events` lost their destructive
+CASCADE — user data now survives orphan purge by construction, with referential integrity enforced in
+the repository (`ensurePersisted` before any favorite/history/playlist reference). A provider track is
+persisted the moment something references it; `YtItemMapper` produces `TrackId.UNSAVED` tracks.
+Measured limitation: v7 never stored provider thumbnails in Room, so migrated rows have NULL artwork
+until the next provider upsert refreshes it.
 
 Source polymorphism is a sealed `MediaLocator`, never a `String` discriminator plus nullable
 columns:
@@ -178,7 +207,10 @@ Commands are method calls on the facade. Nothing else may be an event.
 - Three scope kinds only: `viewModelScope`, `serviceScope`, one `AppContainer.appScope`.
 - `runBlocking` appears **once** in production: the Media3 `ResolvingDataSource.Resolver` bridge,
   which is a synchronous callback on a loader thread. Nothing blocking may be called from inside it —
-  the PoToken generator is `suspend` for exactly this reason.
+  the PoToken generator is `suspend` for exactly this reason. The bridge counts every open as
+  `bridge-initial` (first open of a track start) or `bridge-chunk` (a bounded-range re-open a warm
+  cache entry serves in microseconds), and the service records `onMediaItemTransition` →
+  `STATE_READY` as `transition-ready-*` — so queue-transition latency is measured, not assumed.
 - Repositories own no scopes. CPU mapping uses `flowOn(Dispatchers.Default)`; I/O uses
   `Dispatchers.IO`.
 - `Application.onCreate` performs no file I/O, no JSON parsing, and no network calls. Initializers
@@ -194,17 +226,28 @@ Commands are method calls on the facade. Nothing else may be an event.
   not ViewModels.
 - Colour and typography come only from the theme. No `Color(0x…)` literal outside `core/ui/theme`.
 
-### 5.6 Theme
+### 5.6 Theme and Compile-Time UI Plugins
 
-Data-driven palettes, not plugins. **A runtime plugin/UI-extension system is permanently out of
-scope**: it means loading third-party code with the app's permissions, session tokens, and
-database; it requires a frozen public Compose API; and it conflicts with Play policy. All seven
-prior model analyses reached the same conclusion independently.
+**Runtime code loading is permanently out of scope**: loading external DEX/APKs at runtime with the app's permissions,
+session tokens, and database is a critical security vulnerability, violates Google Play Developer Distribution
+Agreements, and creates an impossible-to-support frozen runtime ABI.
 
-`KaonPalette` is a serialisable data class (id, displayName, isDark, 15 colour roles). Built-ins
-live in a registry map; user palettes may be imported as JSON. Adding a theme is adding data.
+Instead, Kaon employs a **compile-time plugin model**:
+1. **UI Plugins** (`DefaultUiPlugin`, `MinimalUiPlugin`) implement `UiPlugin` from `:core:kernel` and ship
+   compiled directly into the app binary.
+2. Plugins are registered in `KaonKernel` and instantiated via `PluginLoader` using a deterministic build-time
+   list — **zero reflection**.
+3. UI plugins interact with the core player and library strictly through **capability controllers**
+   (`PlayerController`, `LibraryController`, `SettingsController`) and domain models, never touching persistence
+   DAOs or Media3 session controllers directly.
+4. `MainActivity` acts as a minimal shell: it queries the kernel for the active UI plugin and delegates rendering
+   to its `@Composable Content(...)` function. A throwaway minimal UI plugin (`MinimalUiPlugin`) confirms that UI
+   presentations can be swapped without touching core code.
 
-Prerequisite: eliminate hardcoded colours so a palette actually retextures the app.
+Within any UI plugin, palettes remain data-driven: `KaonPalette` is a serialisable data class (id, displayName,
+isDark, 15 colour roles). Built-ins live in a registry map; user palettes may be imported as JSON. Adding a theme
+is adding data.
+
 
 ---
 
@@ -277,6 +320,12 @@ Cipher and PoToken clients remain in the ladder below it; they are reached only 
 fails. `ExtractionFastPathTest` asserts this ordering, because a dependency bump could reorder the
 catalog and reintroduce hundreds of milliseconds per resolve with no compile error.
 
+Measured, not assumed (moto g05, 2026-09): a warm serve is ~0–1 ms; a steady-state VISIONOS
+extraction is ~300–700 ms; the per-client histogram (`client:*` counters in `ResolutionMetrics`) is
+the fallback-frequency observable — a run dominated by non-VISIONOS clients means the catalog
+regressed even when every resolve still succeeds. A cold process can pay a session-change retry
+(see §7.3).
+
 Kaon does not implement a track→video search step: a YouTube `Track` is only ever produced from a
 search result, so it already carries its `videoId` (`YtItemMapper`). The durable half of that identity
 is persisted in the queue snapshot, so a streamed queue survives process death.
@@ -290,11 +339,27 @@ they are distinguished by `ResolvePurpose`:
 - `PREFETCH` — skipped entirely while any foreground resolution is in flight, and skipped when fewer
   than 8 rate-limit slots remain.
 
+Every prefetch outcome is counted in `ResolutionMetrics` (`prefetch-warm`, the skip reasons,
+`prefetch-failed`), so a single benchmark run reports the conversion rate: prefetches that became a
+warm serve at the next track start versus prefetches that warmed nothing. A prefetch takes the same
+`wifiOnly` facts the foreground resolve will use — the key is option-suffixed and the gate must not
+be bypassed by the speculative request.
+
 Purpose is deliberately **not** part of the coalescing key: a prefetch and a playback request for the
 same track must converge on one extraction, and the prefetch result must be reusable.
 
-### 7.3 Re-syncing from upstream
+### 7.3 The session-change race
 
+On a cold process the InnerTube session bootstrap (`YouTubeSessionManager` visitor-data fetch,
+`YouTubeStreamExtractor.prewarm`) runs concurrently with playback. innertubex's session guard
+aborts any in-flight extraction when the session advances, surfacing as `CancellationException
+("InnerTube session changed")` — observed on device. Because that cancellation does not cancel the
+resolver's own job, `extractWithRetry` classifies it as transient and takes the one bounded retry
+under the new session. Measured effect on the moto g05: a cold first resolve that would previously
+fail now completes in ~4.2 s (the retry pays a second full extraction); a steady-state resolve is
+~300–700 ms.
+
+### 7.4 Re-syncing from upstream
 `:innertube`, `core/online/potoken`, and the `innertubex` version are re-synced from
 `github.com/MetrolistGroup/Metrolist` rather than patched locally. On re-sync:
 
@@ -305,8 +370,44 @@ same track must converge on one extraction, and the prefetch result must be reus
 4. Run `ExtractionFastPathTest` — it fails if the client ordering regressed.
 5. Copy upstream's `innertube` tests; do not maintain Kaon-local forks of them.
 
+### 7.5 Streaming Provider Abstraction & Honest Provider Review
+
+Kaon defines an explicit `StreamingProvider` contract with clear capability flags:
+
+```kotlin
+interface StreamingProvider {
+    val id: ProviderId
+    val displayName: String
+    val capabilities: StreamingCapabilities
+    suspend fun resolveStream(locator: MediaLocator.Remote, purpose: ResolvePurpose): ResolvedStreamData
+}
+
+data class StreamingCapabilities(
+    val supportsLossless: Boolean,
+    val requiresAuthentication: Boolean,
+    val supportsOfflineDownloads: Boolean,
+    val rateLimitBudgetPerMinute: Int
+)
+```
+
+#### Honest Assessment of YouTube Extraction:
+1. **Extraction Fragility:** YouTube Music streaming depends on reverse-engineered endpoints, cipher solving via QuickJS,
+   and BotGuard/PoToken attestation via an off-screen WebView. Upstream rotates client player scripts monthly, which
+   inevitably causes extraction breakage until patched.
+2. **Quality Reality:** YouTube Music serves opus/aac codecs capped at ~256 kbps. It does not provide lossless or
+   hi-res streams to third-party scrapers. The quality policy reports `Unsatisfiable` when lossless is requested over
+   YouTube.
+3. **Policy and Distribution Risk:** Reverse-engineering proprietary streaming platforms presents ongoing Terms of
+   Service and Google Play compliance liabilities.
+4. **Architectural Isolation:** By placing YouTube behind `StreamingProvider` and `StreamResolver`, Kaon isolates
+   these liabilities. Alternative providers (Subsonic, Jellyfin, Navidrome, official Web APIs, or local NAS streaming)
+   can be plugged in without changing playback infrastructure, Room schemas, or UI plugins.
+5. **Spotify Integration Scope:** Spotify integration is strictly **playlist metadata import only**. Tracks are matched
+   against local library tracks or provider tracks by ISRC / title / artist / duration. Unresolved tracks are surfaced
+   transparently to the user; Kaon never attempts to spoof proprietary Spotify audio encryption.
 
 ---
+
 
 ## 8. Caching
 
@@ -326,6 +427,34 @@ to delete a file the user explicitly downloaded.
 
 A negative lookup is cached with a short TTL. Misses must not re-hit the network forever.
 
+### 8.1 Library access shape (phase 3)
+
+The UI never observes the whole track table. Every library list is one of:
+
+- **Paged** (`Paging 3` + Room `PagingSource`) — tracks, favorites, albums, artists, playlist
+  members. The `TrackRow` projection resolves favorite state in SQL (`EXISTS`), so a favorite toggle
+  does not re-emit a full id list through a `combine`. Sorting and search are SQL over the
+  `is_missing`-prefixed composite indexes (schema v7); the DAO returns `PagingSource` per sort order
+  rather than binding a runtime `ORDER BY` column.
+- **Bounded by `LIMIT`** — the Home feed rows (`observeRecentAlbums/Artists`, favorite sample), the
+  recent carousel, and the queue built from a list context (`getQueueForContext`, capped at
+  `MAX_QUEUE_SIZE = 2_000` so a tap in a 50k library never materialises the library into the
+  Media3 timeline).
+- **A count** — header totals and empty-state decisions come from `COUNT(*)` queries, never from
+  `.size` on a materialised list.
+
+`observeAllActiveTracks` remains, but is sync-only: `SyncEngine` genuinely must diff every row.
+Entity→domain mapping runs on `Dispatchers.Default` via an injected `mappingDispatcher`
+(`runTest`-injected in tests); Paging loads are already off-main, and its `PagingData` flow is not
+`flowOn`-ed. Measured on moto g05: first page (~50 rows) costs 13–30 ms whether the library holds
+1k or 50k tracks — bounded access is the point, not a faster full scan.
+
+### 8.2 Deliberately absent in phase 3
+
+Room FTS (the indexed-LIKE search measured 10–79 ms per page up to 50k tracks; FTS buys nothing the
+benchmark justifies), a `LibraryRepository` interface (one implementation, several consumers), and
+paging for fixed-size carousels.
+
 ---
 
 ## 9. Migration phases
@@ -338,8 +467,9 @@ Each phase leaves the repository buildable and shippable.
 | 1 | Presentation ownership: `ViewModelStore`, saveable state, lifecycle collection | **done** |
 | 2 | Playback state shape: split `NowPlaying`/`PlaybackQueue`/`PlaybackProgress` | **done** |
 | — | Extraction re-sync: adopt upstream `:innertube` + InnerTubeX, delete the vendored cipher engine | **done** |
-| 3 | Library scale: `flowOn`, SQL search/sort, Paging 3, composite index | pending |
-| 4 | Identity: `:core:model`, `MediaLocator`, schema v7, drop CASCADE, transactions | pending |
+| 3 | Library scale: `flowOn`, SQL search/sort, Paging 3, composite index | **done** |
+| 4 | Identity: `TrackId`/`MediaLocator`/`ProviderId`, schema v8, drop CASCADE, transactions | **done** |
+| 5 | Quality policy: `QualityTier`/`Purpose`/`QualityOutcome` over the extractor | **done** |
 | 5 | Quality policy: `QualityTier`/`Purpose`/`QualityOutcome` over the extractor | pending |
 | 6 | Navigation, error model, theme registry, UI structure | pending |
 | 7 | Downloads + offline | pending |
@@ -362,17 +492,18 @@ Feature prerequisites:
 
 | Item | Reason |
 | --- | --- |
-| Plugin-based UI / runtime code loading | security, Play policy, unmaintainable API surface. **Never.** |
-| Modules beyond `:core:model` + `:core:extraction` | 14k LOC; package discipline suffices |
-| Hilt/Dagger | `AppContainer` holds 10 singletons; revisit at ~15 |
+| Runtime dynamic code loading (DEX/APK) | security, Play policy, sandbox hazards. Compile-time UI plugins via `:core:kernel` are supported instead. |
+| Modules beyond `:core:kernel`, `:core:model`, `:core:extraction` | package discipline plus boundary tests suffice for internals |
+| Hilt/Dagger | `AppContainer` + `KaonKernel.services` holds singletons cleanly |
 | Room FTS | indexed `LIKE` with `LIMIT` exists and is not yet the bottleneck |
 | Hi-Res/Lossless UI options | dishonest before `QualityOutcome.Unsatisfiable` exists |
 | Media3 `CacheDataSource` | must not precede the download boundary |
 | Crossfade | wired through settings with no player implementation; real Media3 work |
 | WorkManager sync / `ContentObserver` | sync is not yet chunked, streamed, or cancellable |
-| Repository interfaces for their own sake | one impl, one consumer each |
-| A use-case layer | pure functions in `:core:model` solve ViewModel bloat without a layer |
+| Repository interfaces for their own sake | capability controllers (`PlayerController`, `LibraryController`) define the boundary |
+| A use-case layer | pure functions and capability controllers solve ViewModel bloat without a layer |
 | Crash reporting / analytics | privacy policy commits to none |
+
 
 ---
 
@@ -386,6 +517,6 @@ Feature prerequisites:
 | `core/playback` | fakes behind `StreamResolver` | state derivation, identical-queue detection, snapshot restore with mixed sources |
 | `feature/*` | coroutines-test + fake repos | ViewModel state |
 | `:app` | boundary tests | `ArchitectureBoundaryTest`, `LoggingBoundaryTest` — all packages, not just `feature/` |
-| device | instrumented | live streaming, Macrobenchmark startup + frame timing during playback |
+| device | instrumented | live streaming, prefetch→cache-hit conversion (`PrefetchConversionInstrumentedTest`), Macrobenchmark startup + frame timing during playback |
 
 No test is excluded from running as a workaround for a build problem. Fix the build.

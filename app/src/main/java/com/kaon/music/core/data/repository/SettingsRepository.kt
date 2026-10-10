@@ -9,8 +9,10 @@ import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
-import com.kaon.music.core.online.AudioQuality
-import com.kaon.music.core.online.AudioType
+import com.kaon.music.core.extraction.model.AudioQuality
+import com.kaon.music.core.extraction.model.AudioType
+import com.kaon.music.core.model.SettingsController
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.map
@@ -37,7 +39,7 @@ data class UserSettings(
     val discogsToken: String = ""
 )
 
-class SettingsRepository(private val context: Context) {
+class SettingsRepository(private val context: Context) : SettingsController {
 
     private object PreferencesKeys {
         val STREAMING_QUALITY = stringPreferencesKey("streaming_quality")
@@ -58,7 +60,8 @@ class SettingsRepository(private val context: Context) {
         val DISCOGS_TOKEN = stringPreferencesKey("discogs_token")
     }
 
-    val userSettingsFlow: Flow<UserSettings> = context.dataStore.data
+
+    override val userSettingsFlow: Flow<UserSettings> = context.dataStore.data
         .catch { exception ->
             if (exception is IOException) {
                 emit(emptyPreferences())
@@ -101,99 +104,128 @@ class SettingsRepository(private val context: Context) {
             )
         }
 
-    suspend fun setStreamingQuality(quality: AudioQuality) {
+    override suspend fun setStreamingQuality(quality: AudioQuality) {
         context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.STREAMING_QUALITY] = quality.name
         }
     }
 
-    suspend fun setPreferredAudioType(audioType: AudioType) {
+    override suspend fun setPreferredAudioType(audioType: AudioType) {
         context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.PREFERRED_AUDIO_TYPE] = audioType.name
         }
     }
 
-    suspend fun setThemeMode(mode: String) {
+    override suspend fun setThemeMode(mode: String) {
         context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.THEME_MODE] = mode
         }
     }
 
-    suspend fun setAccentColor(color: String) {
+    override suspend fun setAccentColor(color: String) {
         context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.ACCENT_COLOR] = color
         }
     }
 
-    suspend fun setMinDurationSeconds(seconds: Int) {
+    override suspend fun setMinDurationSeconds(seconds: Int) {
         context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.MIN_DURATION_SECONDS] = seconds
         }
     }
 
-    suspend fun setShowFormatBadges(enabled: Boolean) {
+    override suspend fun setShowFormatBadges(enabled: Boolean) {
         context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.SHOW_FORMAT_BADGES] = enabled
         }
     }
 
-    suspend fun setShowLosslessBadges(enabled: Boolean) {
+    override suspend fun setShowLosslessBadges(enabled: Boolean) {
         context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.SHOW_LOSSLESS_BADGES] = enabled
         }
     }
 
-    suspend fun setPreResolveNextTracks(enabled: Boolean) {
+    override suspend fun setPreResolveNextTracks(enabled: Boolean) {
         context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.PRE_RESOLVE_NEXT_TRACKS] = enabled
         }
     }
 
-    suspend fun setWifiOnlyStreaming(enabled: Boolean) {
+    override suspend fun setWifiOnlyStreaming(enabled: Boolean) {
         context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.WIFI_ONLY_STREAMING] = enabled
         }
     }
 
-    suspend fun setRecordHistory(enabled: Boolean) {
+    override suspend fun setRecordHistory(enabled: Boolean) {
         context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.RECORD_HISTORY] = enabled
         }
     }
 
-    suspend fun setPauseOnFocusLoss(enabled: Boolean) {
+    override suspend fun setPauseOnFocusLoss(enabled: Boolean) {
         context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.PAUSE_ON_FOCUS_LOSS] = enabled
         }
     }
 
-    suspend fun setSkipSilence(enabled: Boolean) {
+    override suspend fun setSkipSilence(enabled: Boolean) {
         context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.SKIP_SILENCE] = enabled
         }
     }
 
-    suspend fun setCrossfadeSeconds(seconds: Int) {
+    override suspend fun setCrossfadeSeconds(seconds: Int) {
         context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.CROSSFADE_SECONDS] = seconds
         }
     }
 
-    suspend fun setLastFmApiKey(key: String) {
+    override suspend fun setLastFmApiKey(key: String) {
         context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.LAST_FM_API_KEY] = key.trim()
         }
     }
 
-    suspend fun setFanartTvApiKey(key: String) {
+    override suspend fun setFanartTvApiKey(key: String) {
         context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.FANART_TV_API_KEY] = key.trim()
         }
     }
 
-    suspend fun setDiscogsToken(token: String) {
+    override suspend fun setDiscogsToken(token: String) {
         context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.DISCOGS_TOKEN] = token.trim()
         }
     }
+
+    override val settingsFlow: Flow<UserSettings>
+        get() = userSettingsFlow
+
+    override suspend fun updateSettings(transform: (UserSettings) -> UserSettings) {
+        val current = userSettingsFlow.first()
+        val updated = transform(current)
+        setStreamingQuality(updated.streamingQuality)
+        setPreferredAudioType(updated.preferredAudioType)
+        setThemeMode(updated.themeMode)
+        setAccentColor(updated.accentColor)
+        setMinDurationSeconds(updated.minDurationSeconds)
+        setShowFormatBadges(updated.showFormatBadges)
+        setShowLosslessBadges(updated.showLosslessBadges)
+        setPreResolveNextTracks(updated.preResolveNextTracks)
+        setWifiOnlyStreaming(updated.wifiOnlyStreaming)
+        setRecordHistory(updated.recordHistory)
+        setPauseOnFocusLoss(updated.pauseOnFocusLoss)
+        setSkipSilence(updated.skipSilence)
+        setCrossfadeSeconds(updated.crossfadeSeconds)
+        setMetadataApiKeys(updated.lastFmApiKey, updated.fanartTvApiKey, updated.discogsToken)
+    }
+
+    override suspend fun setMetadataApiKeys(lastFmKey: String, fanartTvKey: String, discogsToken: String) {
+        setLastFmApiKey(lastFmKey)
+        setFanartTvApiKey(fanartTvKey)
+        setDiscogsToken(discogsToken)
+    }
 }
+

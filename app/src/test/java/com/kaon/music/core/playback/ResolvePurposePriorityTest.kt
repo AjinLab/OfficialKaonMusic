@@ -1,8 +1,8 @@
 package com.kaon.music.core.playback
 
 import android.net.ConnectivityManager
-import com.kaon.music.core.online.AudioQuality
-import com.kaon.music.core.online.AudioType
+import com.kaon.music.core.extraction.model.AudioQuality
+import com.kaon.music.core.extraction.model.AudioType
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -47,12 +47,13 @@ class ResolvePurposePriorityTest {
         }
     }
 
-    private fun streamData(url: String = "https://cdn.example/audio") = ResolvedStreamData(
-        url = url,
-        headers = mapOf("User-Agent" to "test-agent"),
-        clientName = "VISIONOS",
-        expiresInSeconds = 300
-    )
+    private fun streamData(url: String = "https://cdn.example/audio", clientName: String = "VISIONOS") =
+        ResolvedStreamData(
+            url = url,
+            headers = mapOf("User-Agent" to "test-agent"),
+            clientName = clientName,
+            expiresInSeconds = 300
+        )
 
     @Before
     fun setUp() {
@@ -83,6 +84,7 @@ class ResolvePurposePriorityTest {
         // second concurrent extraction competing for the same network stack and rate-limit window.
         YouTubeStreamResolver.preResolve("background")
         assertEquals("prefetch must not start while playback is resolving", 1, extraction.calls)
+        assertEquals(1L, ResolutionMetrics.count(ResolutionMetrics.PREFETCH_SKIPPED_FOREGROUND))
 
         gate.complete(streamData())
         playback.join()
@@ -111,6 +113,7 @@ class ResolvePurposePriorityTest {
 
         YouTubeStreamResolver.preResolve("speculative")
         assertEquals("prefetch must leave quota for playback", 8, extraction.calls)
+        assertEquals(1L, ResolutionMetrics.count(ResolutionMetrics.PREFETCH_SKIPPED_HEADROOM))
 
         // The remaining slot is still available to a foreground request, which is the point.
         assertTrue(YouTubeStreamResolver.resolveStreamData("fg-last").isSuccess)
@@ -124,6 +127,7 @@ class ResolvePurposePriorityTest {
 
         YouTubeStreamResolver.preResolve("vid", quality = AudioQuality.HIGH)
         assertEquals(1, extraction.calls)
+        assertEquals(1L, ResolutionMetrics.count(ResolutionMetrics.EXTRACTED))
 
         // Same options, so the key matches and the prefetch actually pays off.
         val played = YouTubeStreamResolver.resolveStreamData("vid", AudioQuality.HIGH)
@@ -131,6 +135,40 @@ class ResolvePurposePriorityTest {
         assertTrue(played.isSuccess)
         assertEquals("playback must reuse the prefetched entry", 1, extraction.calls)
         assertEquals(1L, ResolutionMetrics.count(ResolutionMetrics.CACHE_HIT))
+    }
+
+    @Test
+    fun `prefetch on an already-warm track records the warm outcome without extracting`() = runTest {
+        val extraction = FakeExtractionApi { streamData() }
+        YouTubeStreamResolver.resetForTesting(extraction = extraction, clockFn = { now })
+
+        assertTrue(YouTubeStreamResolver.resolveStreamData("vid").isSuccess)
+        YouTubeStreamResolver.preResolve("vid")
+
+        assertEquals(1, extraction.calls)
+        assertEquals(1L, ResolutionMetrics.count(ResolutionMetrics.PREFETCH_WARM))
+    }
+
+    @Test
+    fun `prefetch under the wifi-only gate is skipped on metered`() = runTest {
+        val extraction = FakeExtractionApi { streamData() }
+        YouTubeStreamResolver.resetForTesting(extraction = extraction, clockFn = { now })
+        YouTubeStreamResolver.activeNetworkUnmetered = { false }
+
+        YouTubeStreamResolver.preResolve("vid", wifiOnly = true)
+
+        assertEquals("a gated prefetch must not perform the streaming it would warm for", 0, extraction.calls)
+        assertEquals(1L, ResolutionMetrics.count(ResolutionMetrics.PREFETCH_SKIPPED_WIFI_GATE))
+    }
+
+    @Test
+    fun `prefetch failure is counted separately from extraction success`() = runTest {
+        val extraction = FakeExtractionApi { throw java.io.IOException("offline") }
+        YouTubeStreamResolver.resetForTesting(extraction = extraction, clockFn = { now })
+
+        YouTubeStreamResolver.preResolve("vid")
+
+        assertEquals(1L, ResolutionMetrics.count(ResolutionMetrics.PREFETCH_FAILED))
     }
 
     @Test

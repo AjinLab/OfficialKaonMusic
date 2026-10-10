@@ -1,6 +1,11 @@
 package com.kaon.music.core.data.playlist
 
-import com.kaon.music.core.data.db.dao.FavoriteDao
+import com.kaon.music.core.data.db.dao.FakeTrackDaoBase
+import com.kaon.music.core.data.db.dao.FakePlaylistDaoBase
+import com.kaon.music.core.data.db.dao.FakeFavoriteDaoBase
+import com.kaon.music.core.data.sync.SyncEngine
+import com.kaon.music.core.data.sync.MediaStoreScanner
+import com.kaon.music.core.data.repository.TrackRepository
 import com.kaon.music.core.data.db.dao.PlaylistDao
 import com.kaon.music.core.data.db.dao.TrackDao
 import com.kaon.music.core.data.db.entity.FavoriteTrackEntity
@@ -27,6 +32,7 @@ class PlaylistRepositoryTest {
     private lateinit var fakeTrackDao: FakeTrackDao
     private lateinit var fakeFavoriteDao: FakeFavoriteDao
     private lateinit var repository: PlaylistRepository
+    private lateinit var trackRepository: TrackRepository
 
     @Before
     fun setup() {
@@ -35,10 +41,19 @@ class PlaylistRepositoryTest {
         fakeFavoriteDao = FakeFavoriteDao()
         fakePlaylistDao.trackDaoRef = fakeTrackDao
 
+        trackRepository = TrackRepository(
+            trackDao = fakeTrackDao,
+            favoriteDao = fakeFavoriteDao,
+            syncEngine = SyncEngine(
+                scanner = MediaStoreScanner(object : android.content.ContextWrapper(null) {}),
+                trackDao = fakeTrackDao
+            )
+        )
         repository = PlaylistRepository(
             playlistDao = fakePlaylistDao,
             trackDao = fakeTrackDao,
-            favoriteDao = fakeFavoriteDao
+            favoriteDao = fakeFavoriteDao,
+            trackRepository = trackRepository
         )
     }
 
@@ -101,9 +116,9 @@ class PlaylistRepositoryTest {
 
         val tracks = repository.getTracksForPlaylist(pId)
         assertEquals(3, tracks.size)
-        assertEquals(1L, tracks[0].id)
-        assertEquals(2L, tracks[1].id)
-        assertEquals(3L, tracks[2].id)
+        assertEquals(1L, tracks[0].id.value)
+        assertEquals(2L, tracks[1].id.value)
+        assertEquals(3L, tracks[2].id.value)
     }
 
     @Test
@@ -144,7 +159,7 @@ class PlaylistRepositoryTest {
         // Query-level orphan filtering (WHERE t.is_missing = 0) hides Track 2
         val visibleTracks = repository.getTracksForPlaylist(pId)
         assertEquals(1, visibleTracks.size)
-        assertEquals(1L, visibleTracks.first().id)
+        assertEquals(1L, visibleTracks.first().id.value)
 
         // But raw playlist_tracks membership remains intact
         val rawEntries = fakePlaylistDao.getPlaylistTrackEntries(pId)
@@ -169,15 +184,15 @@ class PlaylistRepositoryTest {
         assertEquals(2, repository.getTracksForPlaylist(pId).size)
 
         // Track 2 file returns and is re-linked
-        fakeTrackDao.reLinkTrack(2L, 9999L)
+        fakeTrackDao.reLinkTrack(2L, 9999L, null)
         assertFalse(fakeTrackDao.getTrackById(2L)!!.isMissing)
 
         // Track 2 resurfaces automatically at original index position 1
         val resurfaced = repository.getTracksForPlaylist(pId)
         assertEquals(3, resurfaced.size)
-        assertEquals(1L, resurfaced[0].id)
-        assertEquals(2L, resurfaced[1].id)
-        assertEquals(3L, resurfaced[2].id)
+        assertEquals(1L, resurfaced[0].id.value)
+        assertEquals(2L, resurfaced[1].id.value)
+        assertEquals(3L, resurfaced[2].id.value)
     }
 
     // ==================== M5-D5 Reordering Tests ====================
@@ -196,16 +211,16 @@ class PlaylistRepositoryTest {
 
         // Initial order: [1, 2, 3]
         val initial = repository.getTracksForPlaylist(pId)
-        assertEquals(listOf(1L, 2L, 3L), initial.map { it.id })
+        assertEquals(listOf(1L, 2L, 3L), initial.map { it.id.value })
 
         // Reorder to: [3, 1, 2]
         repository.reorderTracks(pId, listOf(3L, 1L, 2L))
 
         val reordered = repository.getTracksForPlaylist(pId)
         assertEquals(3, reordered.size)
-        assertEquals(3L, reordered[0].id)
-        assertEquals(1L, reordered[1].id)
-        assertEquals(2L, reordered[2].id)
+        assertEquals(3L, reordered[0].id.value)
+        assertEquals(1L, reordered[1].id.value)
+        assertEquals(2L, reordered[2].id.value)
     }
 
     @Test
@@ -225,8 +240,8 @@ class PlaylistRepositoryTest {
 
         val remaining = repository.getTracksForPlaylist(pId)
         assertEquals(2, remaining.size)
-        assertEquals(1L, remaining[0].id)
-        assertEquals(3L, remaining[1].id)
+        assertEquals(1L, remaining[0].id.value)
+        assertEquals(3L, remaining[1].id.value)
 
         // Verify entries have positions 0 and 1
         val entries = fakePlaylistDao.getPlaylistTrackEntries(pId)
@@ -267,7 +282,7 @@ class PlaylistRepositoryTest {
     }
 }
 
-class FakePlaylistDao : PlaylistDao {
+class FakePlaylistDao : FakePlaylistDaoBase() {
     val playlists = mutableListOf<PlaylistEntity>()
     val playlistTracks = mutableListOf<PlaylistTrackEntity>()
     var trackDaoRef: FakeTrackDao? = null
@@ -384,7 +399,7 @@ class FakePlaylistDao : PlaylistDao {
     }
 }
 
-class FakeFavoriteDao : FavoriteDao {
+class FakeFavoriteDao : FakeFavoriteDaoBase() {
     val favorites = mutableSetOf<Long>()
     private val _flow = MutableStateFlow<List<Long>>(emptyList())
 
@@ -412,7 +427,7 @@ class FakeFavoriteDao : FavoriteDao {
     }
 }
 
-class FakeTrackDao : TrackDao {
+class FakeTrackDao : FakeTrackDaoBase() {
     val storedTracks = mutableListOf<TrackEntity>()
 
     override fun observeAllActiveTracks(): Flow<List<TrackEntity>> = flowOf(storedTracks.filter { !it.isMissing })
@@ -422,7 +437,7 @@ class FakeTrackDao : TrackDao {
     override suspend fun getTracksByIds(trackIds: List<Long>): List<TrackEntity> = storedTracks.filter { trackIds.contains(it.trackId) }
     override suspend fun getTrackByMediaStoreId(mediaStoreId: Long): TrackEntity? = storedTracks.find { it.mediaStoreId == mediaStoreId }
 
-    override fun searchTracks(query: String): Flow<List<TrackEntity>> = flowOf(emptyList())
+    override fun searchTracks(query: String, limit: Int): Flow<List<TrackEntity>> = flowOf(emptyList())
 
     override fun observeRecentlyAddedTracks(limit: Int): Flow<List<TrackEntity>> =
         flowOf(storedTracks.filter { !it.isMissing }.sortedByDescending { it.dateAdded }.take(limit))
@@ -493,7 +508,7 @@ class FakeTrackDao : TrackDao {
         return count
     }
 
-    override suspend fun reLinkTrack(trackId: Long, newMediaStoreId: Long, timestamp: Long) {
+    override suspend fun reLinkTrack(trackId: Long, newMediaStoreId: Long, newRelativePath: String?, timestamp: Long) {
         val idx = storedTracks.indexOfFirst { it.trackId == trackId }
         if (idx >= 0) {
             storedTracks[idx] = storedTracks[idx].copy(

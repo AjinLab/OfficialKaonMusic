@@ -24,15 +24,16 @@ class ArchitectureBoundaryTest {
     private val roomAndPlatformInternals = listOf(
         "com.kaon.music.core.data.db.entity",
         "com.kaon.music.core.data.db.dao",
-        "androidx.media3.exoplayer.ExoPlayer",
-        "androidx.media3.common.MediaItem",
+        "androidx.media3.",
         "android.database.Cursor",
-        "com.landofoz.musicmeta"
+        "com.landofoz.musicmeta",
+        "com.kaon.music.core.playback.PlaybackFacade",
+        "com.kaon.music.core.data.repository."
     )
 
     private val rules = listOf(
         Rule(
-            description = "feature/* must not reach persistence, playback internals, or a provider SDK",
+            description = "feature/* must not reach persistence, repositories, playback internals, or a provider SDK (must use capability controllers and models)",
             packagePath = "feature",
             forbiddenSubstrings = roomAndPlatformInternals + listOf(
                 // Catalog access belongs behind a repository, not in a ViewModel. Still present in
@@ -52,7 +53,7 @@ class ArchitectureBoundaryTest {
                 "com.metrolist.innertube.models.response",
                 "com.metrolist.innertubex.extraction.ContentHints",
                 "com.metrolist.innertubex.extraction.strategy",
-                "com.kaon.music.core.online.potoken"
+                "com.kaon.music.core.extraction.potoken"
             )
         ),
         Rule(
@@ -63,16 +64,6 @@ class ArchitectureBoundaryTest {
             //  - KaonPlaybackService builds a PendingIntent for MainActivity (phase 5 injects it)
             //  - ArtworkImage resolves MetadataRepository from the Application (phase 6 moves it)
             allowedFiles = setOf("KaonPlaybackService.kt", "ArtworkImage.kt")
-        ),
-        Rule(
-            description = "core/online must not depend on data, playback, or UI",
-            packagePath = "core/online",
-            forbiddenSubstrings = listOf(
-                "com.kaon.music.core.data",
-                "com.kaon.music.core.playback",
-                "com.kaon.music.core.designsystem",
-                "com.kaon.music.feature"
-            )
         ),
         Rule(
             description = "core/policy must stay pure: no Android, no Room, no playback",

@@ -16,51 +16,52 @@ fun getKaonColors(
     accentColor: String = "CORAL",
     isSystemDark: Boolean = true
 ): KaonColors {
-    val (primary, primaryVariant) = when (accentColor.uppercase()) {
-        "VIOLET" -> KaonVioletPrimary to KaonVioletVariant
-        "BLUE" -> KaonBluePrimary to KaonBlueVariant
-        "EMERALD" -> KaonEmeraldPrimary to KaonEmeraldVariant
-        else -> KaonCoralPrimary to KaonCoralVariant
-    }
-
+    val swatch = accentSwatchFor(accentColor)
     val isAmoled = themeMode.uppercase() == "AMOLED"
 
     return if (isAmoled) {
+        // Pure-black tier: OLED battery saving, surfaces separated by elevation alone.
         KaonColors(
-            primary = primary,
-            primaryVariant = primaryVariant,
-            secondary = primary,
+            primary = swatch.accent,
+            primaryVariant = swatch.variant,
+            onAccent = swatch.onAccent,
+            secondary = swatch.variant,
             background = Color(0xFF000000),
-            surface = Color(0xFF0A0A0C),
-            surfaceElevated = Color(0xFF141418),
-            surfaceHighlight = Color(0xFF1C1C22),
-            cardBackground = Color(0xFF0F0F12),
-            cardDark = Color(0xFF08080A),
-            textPrimary = Color(0xFFFFFFFF),
-            textSecondary = Color(0xFFA0A0AB),
-            textTertiary = Color(0xFF6B6B76),
-            divider = Color(0xFF202026),
+            surface = Color(0xFF08090B),
+            surfaceElevated = Color(0xFF111318),
+            surfaceHighlight = Color(0xFF1A1D23),
+            cardBackground = Color(0xFF0C0E11),
+            cardDark = Color(0xFF060708),
+            textPrimary = Color(0xFFF2F3F5),
+            textSecondary = Color(0xFF9DA3AE),
+            textTertiary = Color(0xFF5C626E),
+            divider = Color(0xFF1B1E24),
             heartRed = Color(0xFFF43F5E),
-            trackPlaceholder = Color(0xFF141418)
+            trackPlaceholder = Color(0xFF101216),
+            accent = swatch.accent,
+            accentPink = Color(0xFFF43F5E)
         )
     } else {
-        // Standard Kaon Dark
+        // Kaon Dark — the listening room: warm charcoal layers, accent as the only hue signal.
         KaonColors(
-            primary = primary,
-            primaryVariant = primaryVariant,
-            secondary = if (accentColor.uppercase() == "VIOLET") KaonCoralPrimary else Color(0xFF8B5CF6),
-            background = Color(0xFF0F0F11),
-            surface = Color(0xFF16161A),
-            surfaceElevated = Color(0xFF222228),
-            surfaceHighlight = Color(0xFF2C2C34),
-            cardBackground = Color(0xFF1A1A1E),
-            cardDark = Color(0xFF141418),
-            textPrimary = Color(0xFFFFFFFF),
-            textSecondary = Color(0xFFA0A0AB),
-            textTertiary = Color(0xFF6B6B76),
-            divider = Color(0xFF26262E),
+            primary = swatch.accent,
+            primaryVariant = swatch.variant,
+            onAccent = swatch.onAccent,
+            secondary = swatch.variant,
+            background = Color(0xFF0B0C0F),
+            surface = Color(0xFF121318),
+            surfaceElevated = Color(0xFF1A1C22),
+            surfaceHighlight = Color(0xFF23252E),
+            cardBackground = Color(0xFF14161B),
+            cardDark = Color(0xFF0E1013),
+            textPrimary = Color(0xFFF2F3F5),
+            textSecondary = Color(0xFF9DA3AE),
+            textTertiary = Color(0xFF5C626E),
+            divider = Color(0xFF22242C),
             heartRed = Color(0xFFF43F5E),
-            trackPlaceholder = Color(0xFF202026)
+            trackPlaceholder = Color(0xFF171920),
+            accent = swatch.accent,
+            accentPink = Color(0xFFF43F5E)
         )
     }
 }
@@ -79,11 +80,11 @@ fun KaonTheme(
 
     val colorScheme = darkColorScheme(
         primary = kaonColors.primary,
-        onPrimary = kaonColors.textPrimary,
+        onPrimary = kaonColors.onAccent,
         primaryContainer = kaonColors.surfaceElevated,
         onPrimaryContainer = kaonColors.primary,
         secondary = kaonColors.secondary,
-        onSecondary = kaonColors.textPrimary,
+        onSecondary = kaonColors.onAccent,
         background = kaonColors.background,
         onBackground = kaonColors.textPrimary,
         surface = kaonColors.surface,

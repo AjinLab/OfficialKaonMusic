@@ -3,6 +3,7 @@ package com.kaon.music.core.playback
 import com.kaon.music.core.data.db.dao.QueueSnapshotDao
 import com.kaon.music.core.data.db.entity.QueueSnapshotEntity
 import com.kaon.music.core.data.model.QueueEntry
+import com.kaon.music.core.data.model.TrackId
 import com.kaon.music.core.data.model.QueueSnapshot
 import com.kaon.music.core.data.model.Track
 import com.kaon.music.core.playback.model.RepeatMode
@@ -77,7 +78,7 @@ class PlaybackQueueTest {
         val snapshotManager = QueueSnapshotManager(fakeQueueDao, testScope)
 
         val originalSnapshot = QueueSnapshot(
-            entries = listOf(101L, 202L, 303L, 404L).map { QueueEntry(trackId = it) },
+            entries = listOf(101L, 202L, 303L, 404L).map { QueueEntry(trackId = TrackId(it)) },
             currentIndex = 1,
             currentPositionMs = 73400L,
             isShuffleEnabled = true,
@@ -90,7 +91,7 @@ class PlaybackQueueTest {
         // Simulate cold load in new process instance
         val restored = snapshotManager.loadSnapshot()
         assertNotNull(restored)
-        assertEquals(listOf(101L, 202L, 303L, 404L), restored!!.trackIds)
+        assertEquals(listOf(101L, 202L, 303L, 404L), restored!!.trackIds.map { it.value })
         assertEquals(1, restored.currentIndex)
         assertEquals(73400L, restored.currentPositionMs)
         assertEquals(true, restored.isShuffleEnabled)
@@ -148,7 +149,7 @@ class PlaybackQueueTest {
         assertTrue(isIdenticalQueue)
 
         // Target track is index 2 ("Track 3")
-        val targetIndex = selectedQueue.indexOfFirst { it.id == 3L }
+        val targetIndex = selectedQueue.indexOfFirst { it.id.value == 3L }
         assertEquals(2, targetIndex)
     }
 
@@ -193,7 +194,7 @@ class PlaybackQueueTest {
 
         snapshotManager.saveSnapshotDirectly(
             QueueSnapshot(
-                entries = listOf(999L, 888L).map { QueueEntry(trackId = it) }, // Non-existent in library
+                entries = listOf(999L, 888L).map { QueueEntry(trackId = TrackId(it)) }, // Non-existent in library
                 currentIndex = 0,
                 currentPositionMs = 0L,
                 isShuffleEnabled = false,
@@ -241,20 +242,8 @@ class PlaybackQueueTest {
         assertFalse(isPlaying)
     }
 
-    private fun createDummyTrack(id: Long, title: String): Track {
-        return Track(
-            id = id,
-            mediaStoreId = id + 1000,
-            title = title,
-            artist = "Artist",
-            album = "Album",
-            durationMs = 180000L,
-            sizeBytes = 3000000L,
-            dateModified = 1000L,
-            albumId = 1L,
-            isFavorite = false
-        )
-    }
+    private fun createDummyTrack(id: Long, title: String): Track =
+        com.kaon.music.core.data.model.localTrack(id = id, title = title)
 }
 
 class FakeQueueSnapshotDao : QueueSnapshotDao {

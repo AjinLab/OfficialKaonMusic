@@ -112,8 +112,11 @@ android {
 }
 
 dependencies {
+    implementation(project(":core:kernel"))
     implementation(project(":innertube"))
+    implementation(project(":core-extraction"))
     coreLibraryDesugaring(libs.desugaring)
+
 
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
@@ -140,7 +143,13 @@ dependencies {
     // Room
     implementation(libs.androidx.room.runtime)
     implementation(libs.androidx.room.ktx)
+    implementation(libs.androidx.room.paging)
     ksp(libs.androidx.room.compiler)
+
+    // Paging 3 — bounded library lists (ARCHITECTURE.md §6: no DAO query returns an unbounded row
+    // set to the UI)
+    implementation(libs.androidx.paging.runtime)
+    implementation(libs.androidx.paging.compose)
 
     // Coil 3
     implementation(libs.coil.compose)
@@ -163,8 +172,10 @@ dependencies {
     // Testing
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
+    testImplementation(libs.androidx.paging.testing)
     testImplementation("androidx.test:core:1.6.1")
     androidTestImplementation(libs.androidx.junit)
+    androidTestImplementation(libs.androidx.paging.testing)
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation("androidx.test:core:1.6.1")
     androidTestImplementation("androidx.test:runner:1.6.2")

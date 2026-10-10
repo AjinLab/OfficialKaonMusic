@@ -4,12 +4,13 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.kaon.music.core.data.online.YouTubeSessionManager
-import com.kaon.music.core.data.repository.HistoryRepository
-import com.kaon.music.core.data.repository.SettingsRepository
-import com.kaon.music.core.data.repository.TrackRepository
-import com.kaon.music.core.data.repository.UserSettings
-import com.kaon.music.core.online.AudioQuality
-import com.kaon.music.core.online.AudioType
+import com.kaon.music.core.model.ErrorMapper
+import com.kaon.music.core.model.LibraryController
+import com.kaon.music.core.model.SettingsController
+import com.kaon.music.core.model.UserMessageBus
+import com.kaon.music.core.model.UserSettings
+import com.kaon.music.core.extraction.model.AudioQuality
+import com.kaon.music.core.extraction.model.AudioType
 import com.kaon.music.core.playback.YouTubeStreamResolver
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -21,16 +22,15 @@ import kotlinx.coroutines.launch
 data class SettingsUiState(
     val settings: UserSettings = UserSettings(),
     val selectedSection: SettingsSection? = null,
-    val isSyncing: Boolean = false,
-    val userMessage: String? = null
+    val isSyncing: Boolean = false
 )
 
 class SettingsViewModel(
-    private val settingsRepository: SettingsRepository,
-    private val trackRepository: TrackRepository,
-    private val historyRepository: HistoryRepository? = null,
+    private val settingsController: SettingsController,
+    private val libraryController: LibraryController,
     private val youtubeSessionManager: YouTubeSessionManager? = null,
-    private val savedStateHandle: SavedStateHandle = SavedStateHandle()
+    private val savedStateHandle: SavedStateHandle = SavedStateHandle(),
+    private val userMessageBus: UserMessageBus? = null
 ) : ViewModel() {
 
     // Restored so rotating inside a settings subpage does not bounce the user back to the root list.
@@ -42,10 +42,8 @@ class SettingsViewModel(
     private val _isSyncing = MutableStateFlow(false)
     val isSyncing: StateFlow<Boolean> = _isSyncing.asStateFlow()
 
-    private val _userMessage = MutableStateFlow<String?>(null)
-    val userMessage: StateFlow<String?> = _userMessage.asStateFlow()
 
-    val settings: StateFlow<UserSettings> = settingsRepository.userSettingsFlow
+    val settings: StateFlow<UserSettings> = settingsController.userSettingsFlow
         .stateIn(
             scope = viewModelScope,
             started = SharingStarted.WhileSubscribed(5000),
@@ -58,38 +56,37 @@ class SettingsViewModel(
     }
 
     fun dismissUserMessage() {
-        _userMessage.value = null
-    }
+            }
 
     fun setStreamingQuality(quality: AudioQuality) {
         viewModelScope.launch {
-            settingsRepository.setStreamingQuality(quality)
+            settingsController.setStreamingQuality(quality)
         }
     }
 
     fun setPreferredAudioType(audioType: AudioType) {
         viewModelScope.launch {
-            settingsRepository.setPreferredAudioType(audioType)
+            settingsController.setPreferredAudioType(audioType)
         }
     }
 
     fun setThemeMode(mode: String) {
         viewModelScope.launch {
-            settingsRepository.setThemeMode(mode)
+            settingsController.setThemeMode(mode)
         }
     }
 
     fun setAccentColor(color: String) {
         viewModelScope.launch {
-            settingsRepository.setAccentColor(color)
+            settingsController.setAccentColor(color)
         }
     }
 
     fun setMinDurationSeconds(seconds: Int) {
         viewModelScope.launch {
-            settingsRepository.setMinDurationSeconds(seconds)
+            settingsController.setMinDurationSeconds(seconds)
             try {
-                trackRepository.syncLibrary(minDurationMs = seconds * 1000L)
+                libraryController.syncLibrary(minDurationMs = seconds * 1000L)
             } catch (e: Exception) {
                 // Non-fatal background sync
             }
@@ -98,67 +95,67 @@ class SettingsViewModel(
 
     fun setShowFormatBadges(enabled: Boolean) {
         viewModelScope.launch {
-            settingsRepository.setShowFormatBadges(enabled)
+            settingsController.setShowFormatBadges(enabled)
         }
     }
 
     fun setShowLosslessBadges(enabled: Boolean) {
         viewModelScope.launch {
-            settingsRepository.setShowLosslessBadges(enabled)
+            settingsController.setShowLosslessBadges(enabled)
         }
     }
 
     fun setPreResolveNextTracks(enabled: Boolean) {
         viewModelScope.launch {
-            settingsRepository.setPreResolveNextTracks(enabled)
+            settingsController.setPreResolveNextTracks(enabled)
         }
     }
 
     fun setWifiOnlyStreaming(enabled: Boolean) {
         viewModelScope.launch {
-            settingsRepository.setWifiOnlyStreaming(enabled)
+            settingsController.setWifiOnlyStreaming(enabled)
         }
     }
 
     fun setRecordHistory(enabled: Boolean) {
         viewModelScope.launch {
-            settingsRepository.setRecordHistory(enabled)
+            settingsController.setRecordHistory(enabled)
         }
     }
 
     fun setPauseOnFocusLoss(enabled: Boolean) {
         viewModelScope.launch {
-            settingsRepository.setPauseOnFocusLoss(enabled)
+            settingsController.setPauseOnFocusLoss(enabled)
         }
     }
 
     fun setSkipSilence(enabled: Boolean) {
         viewModelScope.launch {
-            settingsRepository.setSkipSilence(enabled)
+            settingsController.setSkipSilence(enabled)
         }
     }
 
     fun setCrossfadeSeconds(seconds: Int) {
         viewModelScope.launch {
-            settingsRepository.setCrossfadeSeconds(seconds)
+            settingsController.setCrossfadeSeconds(seconds)
         }
     }
 
     fun setLastFmApiKey(key: String) {
         viewModelScope.launch {
-            settingsRepository.setLastFmApiKey(key)
+            settingsController.setLastFmApiKey(key)
         }
     }
 
     fun setFanartTvApiKey(key: String) {
         viewModelScope.launch {
-            settingsRepository.setFanartTvApiKey(key)
+            settingsController.setFanartTvApiKey(key)
         }
     }
 
     fun setDiscogsToken(token: String) {
         viewModelScope.launch {
-            settingsRepository.setDiscogsToken(token)
+            settingsController.setDiscogsToken(token)
         }
     }
 
@@ -168,10 +165,10 @@ class SettingsViewModel(
             _isSyncing.value = true
             try {
                 val minDurationMs = settings.value.minDurationSeconds * 1000L
-                val result = trackRepository.syncLibrary(minDurationMs = minDurationMs)
-                _userMessage.value = "Library synced: ${result.totalDiscovered} tracks found (+${result.added} new)"
+                val result = libraryController.syncLibrary(minDurationMs = minDurationMs)
+                userMessageBus?.post("Library synced: ${result.totalDiscovered} tracks found (+${result.added} new)")
             } catch (e: Exception) {
-                _userMessage.value = "Sync failed: ${e.message}"
+                userMessageBus?.post(ErrorMapper.fromThrowable(e))
             } finally {
                 _isSyncing.value = false
             }
@@ -181,10 +178,10 @@ class SettingsViewModel(
     fun clearListeningHistory() {
         viewModelScope.launch {
             try {
-                historyRepository?.clearAllHistory()
-                _userMessage.value = "Listening history cleared"
+                libraryController.clearListeningHistory()
+                userMessageBus?.post("Listening history cleared")
             } catch (e: Exception) {
-                _userMessage.value = "Failed to clear history: ${e.message}"
+                userMessageBus?.post("Failed to clear history")
             }
         }
     }
@@ -193,9 +190,11 @@ class SettingsViewModel(
         viewModelScope.launch {
             try {
                 YouTubeStreamResolver.clearCache()
-                _userMessage.value = "Stream resolver cache cleared"
+                userMessageBus?.post("Stream resolver cache cleared")
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (e: Exception) {
-                _userMessage.value = "Cache clear failed: ${e.message}"
+                userMessageBus?.post("Cache clear failed — try again")
             }
         }
     }

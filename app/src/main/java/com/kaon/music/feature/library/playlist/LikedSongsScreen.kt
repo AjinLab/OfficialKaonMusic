@@ -15,7 +15,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -38,23 +37,27 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.paging.compose.LazyPagingItems
 import com.kaon.music.core.data.model.Track
 import com.kaon.music.core.designsystem.component.TrackItem
+import com.kaon.music.core.designsystem.component.pagedItems
 import com.kaon.music.core.designsystem.theme.KaonBackground
+import com.kaon.music.core.designsystem.theme.LikedSongsBrush
 import com.kaon.music.core.designsystem.theme.KaonPrimary
 import com.kaon.music.core.designsystem.theme.KaonTextPrimary
 import com.kaon.music.core.designsystem.theme.KaonTextSecondary
 
 @Composable
 fun LikedSongsScreen(
-    tracks: List<Track>,
+    tracks: LazyPagingItems<Track>,
+    trackCount: Int,
     activeTrackId: Long?,
     isPlaying: Boolean,
     onBack: () -> Unit,
     onTrackClick: (Track) -> Unit,
     onPlayAll: () -> Unit,
     onShuffleAll: () -> Unit,
-    onFavoriteToggle: (Long) -> Unit,
+    onFavoriteToggle: (Track) -> Unit,
     onPlayNext: (Track) -> Unit,
     onAddToQueue: (Track) -> Unit,
     bottomPadding: PaddingValues,
@@ -106,11 +109,7 @@ fun LikedSongsScreen(
                         modifier = Modifier
                             .size(180.dp)
                             .clip(RoundedCornerShape(16.dp))
-                            .background(
-                                Brush.linearGradient(
-                                    listOf(Color(0xFF8B5CF6), Color(0xFFEC4899), Color(0xFFF43F5E))
-                                )
-                            ),
+                            .background(LikedSongsBrush),
                         contentAlignment = Alignment.Center
                     ) {
                         Icon(
@@ -132,7 +131,7 @@ fun LikedSongsScreen(
                     Spacer(modifier = Modifier.height(4.dp))
 
                     Text(
-                        text = "${tracks.size} ${if (tracks.size == 1) "song" else "songs"}",
+                        text = "$trackCount ${if (trackCount == 1) "song" else "songs"}",
                         style = MaterialTheme.typography.titleMedium,
                         color = KaonTextSecondary
                     )
@@ -174,16 +173,13 @@ fun LikedSongsScreen(
                 }
             }
 
-            itemsIndexed(
-                items = tracks,
-                key = { _, track -> track.id }
-            ) { _, track ->
+            pagedItems(tracks, key = { it.stableKey }) { track ->
                 TrackItem(
                     track = track,
                     isPlaying = isPlaying,
-                    isCurrent = track.id == activeTrackId,
+                    isCurrent = track.id.value == activeTrackId,
                     onClick = { onTrackClick(track) },
-                    onFavoriteToggle = { onFavoriteToggle(track.id) },
+                    onFavoriteToggle = { onFavoriteToggle(track) },
                     onPlayNext = { onPlayNext(track) },
                     onAddToQueue = { onAddToQueue(track) },
                     onAddToPlaylist = { onAddToPlaylist(track) }

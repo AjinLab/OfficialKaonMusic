@@ -64,6 +64,40 @@ object ResolutionMetrics {
     const val RATE_LIMITED = "rate-limited"
     const val WIFI_BLOCKED = "wifi-blocked"
 
+    /**
+     * Bridge outcomes — what the Media3 `runBlocking` loader-thread bridge cost per open.
+     *
+     * `bridge-initial` is the first open of a track start (the user-visible latency contributor);
+     * `bridge-chunk` is every subsequent bounded-range re-open, which a warm cache entry serves in
+     * microseconds. Separating them keeps chunk re-opens from diluting the track-start average.
+     */
+    const val BRIDGE_INITIAL = "bridge-initial"
+    const val BRIDGE_CHUNK = "bridge-chunk"
+    const val BRIDGE_FAILED = "bridge-failed"
+    const val BRIDGE_CANCELLED = "bridge-cancelled"
+
+    /**
+     * Queue-transition latency: `onMediaItemTransition` → `STATE_READY` on the new item, split by
+     * source. Local tracks are the baseline (no resolution, no network); the remote number is what
+     * pre-resolution and the stream cache are trying to drive toward that baseline.
+     */
+    const val TRANSITION_READY_REMOTE = "transition-ready-remote"
+    const val TRANSITION_READY_LOCAL = "transition-ready-local"
+
+    /**
+     * Pre-resolution outcomes. Completed prefetches surface as [EXTRACTED]; the skips are counted
+     * separately so a benchmark can compute the conversion rate: how many prefetches turned into
+     * [CACHE_HIT] serves at the next track start versus how many never warmed anything.
+     */
+    const val PREFETCH_WARM = "prefetch-warm"
+    const val PREFETCH_SKIPPED_FOREGROUND = "prefetch-skipped-foreground"
+    const val PREFETCH_SKIPPED_HEADROOM = "prefetch-skipped-headroom"
+    const val PREFETCH_SKIPPED_WIFI_GATE = "prefetch-skipped-wifi-gate"
+    const val PREFETCH_FAILED = "prefetch-failed"
+
+    /** Prefix for per-client serve counts; the histogram answers "how often did the cheap client win". */
+    private const val CLIENT_PREFIX = "client:"
+
     private val counts = ConcurrentHashMap<String, AtomicLong>()
     private val totalMs = ConcurrentHashMap<String, AtomicLong>()
 
@@ -72,7 +106,22 @@ object ResolutionMetrics {
         totalMs.computeIfAbsent(outcome) { AtomicLong() }.addAndGet(durationMs)
     }
 
+    /**
+     * Counts one successful extraction attributed to [clientName].
+     *
+     * Client fallback rotation lives inside innertubex, invisible to Kaon except through the client
+     * name on the result — so the histogram of these counts across a benchmark run is the only
+     * measurement of fallback frequency the app can make without touching the extraction engine.
+     */
+    internal fun recordClient(clientName: String) {
+        record(CLIENT_PREFIX + clientName, 0L)
+    }
+
     fun count(outcome: String): Long = counts[outcome]?.get() ?: 0L
+
+    fun clientCounts(): Map<String, Long> = counts.keys
+        .filter { it.startsWith(CLIENT_PREFIX) }
+        .associateWith { count(it) }
 
     fun averageMs(outcome: String): Long {
         val n = count(outcome)
